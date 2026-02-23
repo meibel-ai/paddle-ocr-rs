@@ -30,9 +30,9 @@ pub trait BaseNet {
 
     fn init(&mut self, session: Session) {
         let input_names: Vec<String> = session
-            .inputs
+            .inputs()
             .iter()
-            .map(|input| input.name.clone())
+            .map(|input| input.name().to_string())
             .collect();
 
         self.set_input_names(input_names);

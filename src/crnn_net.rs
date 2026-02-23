@@ -84,15 +84,14 @@ impl CrnnNet {
             .metadata()
             .expect("crnn_net metadata not initialized")
             .custom("character")
-            .expect("crnn_net character not initialized[0]")
-            .expect("crnn_net character not initialized[1]");
+            .expect("crnn_net character not initialized");
 
         // 大概估一个数即可
         let mut keys = Vec::with_capacity((model_charater_list.len() as f32 / 3.9) as usize);
 
         keys.push("#".to_string());
 
-        keys.extend(model_charater_list.split('\n').map(|s| s.to_string()));
+        keys.extend(model_charater_list.split('\n').map(|s: &str| s.to_string()));
 
         keys.push(" ".to_string());
 
