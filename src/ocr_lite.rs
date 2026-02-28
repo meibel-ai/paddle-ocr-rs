@@ -77,6 +77,21 @@ impl OcrLite {
         Ok(())
     }
 
+    pub fn init_models_custom_with_dict(
+        &mut self,
+        det_path: &str,
+        cls_path: &str,
+        rec_path: &str,
+        dict_path: &str,
+        builder_fn: fn(SessionBuilder) -> Result<SessionBuilder, ort::Error>,
+    ) -> Result<(), OcrError> {
+        self.db_net.init_model(det_path, 0, Some(builder_fn))?;
+        self.angle_net.init_model(cls_path, 0, Some(builder_fn))?;
+        self.crnn_net
+            .init_model_dict_file(rec_path, 0, Some(builder_fn), dict_path)?;
+        Ok(())
+    }
+
     pub fn init_models_from_memory(
         &mut self,
         det_bytes: &[u8],
