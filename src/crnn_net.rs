@@ -102,7 +102,12 @@ impl CrnnNet {
         let content = std::fs::read_to_string(path)?;
         let mut keys = Vec::new();
 
+        // Index 0 = CTC blank token (must match get_keys() which prepends "#")
+        keys.push("#".to_string());
         keys.extend(content.split('\n').map(|s| s.to_string()));
+        // Trailing space token (must match get_keys() which appends " ")
+        keys.push(" ".to_string());
+
         self.keys = keys;
         Ok(())
     }
