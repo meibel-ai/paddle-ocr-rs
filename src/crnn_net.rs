@@ -126,13 +126,23 @@ impl CrnnNet {
     ) -> Result<Vec<TextLine>, OcrError> {
         let mut text_lines = Vec::new();
 
+        // Compute max width/height ratio across all images in the batch.
+        // This matches Python PaddleOCR's batch processing where all images
+        // are padded to the same width (48 * max_wh_ratio).
+        // Minimum is 320/48 ≈ 6.667 (Python's default rec_img_shape width).
+        let base_wh_ratio = 320.0 / CRNN_DST_HEIGHT as f32;
+        let max_wh_ratio = part_imgs
+            .iter()
+            .map(|img| img.width() as f32 / img.height().max(1) as f32)
+            .fold(base_wh_ratio, f32::max);
+
         for (index, img) in part_imgs.iter().enumerate() {
-            let mut text_line = self.get_text_line(img)?;
+            let mut text_line = self.get_text_line_with_wh_ratio(img, max_wh_ratio)?;
 
             if (text_line.text_score.is_nan() || text_line.text_score < angle_rollback_threshold)
                 && let Some(angle_rollback_record) = angle_rollback_records.get(&index)
             {
-                text_line = self.get_text_line(angle_rollback_record)?;
+                text_line = self.get_text_line_with_wh_ratio(angle_rollback_record, max_wh_ratio)?;
             }
 
             text_lines.push(text_line);
@@ -141,23 +151,54 @@ impl CrnnNet {
         Ok(text_lines)
     }
 
-    fn get_text_line(&mut self, img_src: &image::RgbImage) -> Result<TextLine, OcrError> {
+    /// Recognize a single text line image with an optional max width/height ratio
+    /// for padding. When `max_wh_ratio > 0`, the normalized tensor is zero-padded
+    /// on the right to `(48 * max_wh_ratio)` pixels. This matches Python PaddleOCR's
+    /// `resize_norm_img` which pads to a fixed batch width.
+    fn get_text_line_with_wh_ratio(
+        &mut self,
+        img_src: &image::RgbImage,
+        max_wh_ratio: f32,
+    ) -> Result<TextLine, OcrError> {
         let Some(session) = &mut self.session else {
             return Err(OcrError::SessionNotInitialized);
         };
 
         let scale = CRNN_DST_HEIGHT as f32 / img_src.height() as f32;
-        let dst_width = (img_src.width() as f32 * scale) as u32;
+        let resized_w = (img_src.width() as f32 * scale).ceil() as u32;
 
         let src_resize = image::imageops::resize(
             img_src,
-            dst_width,
+            resized_w,
             CRNN_DST_HEIGHT,
             image::imageops::FilterType::Triangle,
         );
 
         let input_tensors =
             OcrUtils::substract_mean_normalize(&src_resize, &MEAN_VALUES, &NORM_VALUES);
+
+        // Zero-pad to the target width if max_wh_ratio is specified.
+        // Python PaddleOCR pads recognition inputs to (48 * max_wh_ratio) with zeros.
+        // Zero in normalized space = (0/127.5 - 1.0) = -1.0, but Python uses actual
+        // 0.0 in its padded tensor (the padding is applied AFTER normalization).
+        let input_tensors = if max_wh_ratio > 0.0 {
+            let target_w = (CRNN_DST_HEIGHT as f32 * max_wh_ratio) as u32;
+            let target_w = target_w.max(resized_w); // never shrink
+            if target_w > resized_w {
+                let shape = input_tensors.shape();
+                let c = shape[1];
+                let h = shape[2];
+                let mut padded = ndarray::Array4::<f32>::zeros((1, c, h, target_w as usize));
+                padded
+                    .slice_mut(ndarray::s![.., .., .., ..resized_w as usize])
+                    .assign(&input_tensors);
+                padded
+            } else {
+                input_tensors
+            }
+        } else {
+            input_tensors
+        };
 
         let input_tensors = Tensor::from_array(input_tensors)?;
 
@@ -182,9 +223,9 @@ impl CrnnNet {
     ) -> Result<TextLine, OcrError> {
         let mut text_line = TextLine::default();
         let mut last_index = 0;
-
         let mut text_score_sum = 0.0;
-        let mut text_socre_count = 0;
+        let mut text_score_count = 0;
+
         for i in 0..height {
             let start = i * width;
             let stop = (i + 1) * width;
@@ -205,12 +246,16 @@ impl CrnnNet {
             if max_index > 0 && max_index < keys.len() && !(i > 0 && max_index == last_index) {
                 text_line.text.push_str(&keys[max_index]);
                 text_score_sum += max_value;
-                text_socre_count += 1;
+                text_score_count += 1;
             }
             last_index = max_index;
         }
 
-        text_line.text_score = text_score_sum / text_socre_count as f32;
+        text_line.text_score = if text_score_count > 0 {
+            text_score_sum / text_score_count as f32
+        } else {
+            0.0
+        };
         Ok(text_line)
     }
 }
