@@ -127,7 +127,7 @@ impl OcrUtils {
         imageproc::geometric_transformations::warp_into(
             &img_crop,
             &projection,
-            Interpolation::Nearest,
+            Interpolation::Bilinear,
             image::Rgb([255, 255, 255]),
             &mut part_img,
         );
