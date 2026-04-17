@@ -99,72 +99,18 @@ impl OcrUtils {
             point.y -= min_y;
         }
 
-        // Use max of opposing edges to handle skewed text (matches Python cv2 implementation)
-        let dist01 = ((points[0].x as i32 - points[1].x as i32).pow(2) as f32
+        let img_crop_width = ((points[0].x as i32 - points[1].x as i32).pow(2) as f32
             + (points[0].y as i32 - points[1].y as i32).pow(2) as f32)
-            .sqrt();
-        let dist23 = ((points[2].x as i32 - points[3].x as i32).pow(2) as f32
-            + (points[2].y as i32 - points[3].y as i32).pow(2) as f32)
-            .sqrt();
-        let dist03 = ((points[0].x as i32 - points[3].x as i32).pow(2) as f32
+            .sqrt() as u32;
+        let img_crop_height = ((points[0].x as i32 - points[3].x as i32).pow(2) as f32
             + (points[0].y as i32 - points[3].y as i32).pow(2) as f32)
-            .sqrt();
-        let dist12 = ((points[1].x as i32 - points[2].x as i32).pow(2) as f32
-            + (points[1].y as i32 - points[2].y as i32).pow(2) as f32)
-            .sqrt();
-        let img_crop_width = dist01.max(dist23) as u32;
-        let img_crop_height = dist03.max(dist12) as u32;
+            .sqrt() as u32;
 
-        // Border replicate: extend the crop by 2px on each edge using edge-pixel
-        // replication. This prevents white fringing at text boundaries during the
-        // perspective warp (matches Python's cv2.BORDER_REPLICATE behavior).
-        const BORDER: u32 = 2;
-        let crop_w = img_crop.width();
-        let crop_h = img_crop.height();
-        let padded_w = crop_w + 2 * BORDER;
-        let padded_h = crop_h + 2 * BORDER;
-        let mut padded = image::RgbImage::new(padded_w, padded_h);
-
-        // Copy the original crop into the center
-        image::imageops::replace(&mut padded, &img_crop, BORDER as i64, BORDER as i64);
-
-        // Replicate edges (top/bottom rows, left/right columns, then corners)
-        for x in 0..crop_w {
-            let top_px = *img_crop.get_pixel(x, 0);
-            let bot_px = *img_crop.get_pixel(x, crop_h.saturating_sub(1));
-            for b in 0..BORDER {
-                padded.put_pixel(x + BORDER, b, top_px);
-                padded.put_pixel(x + BORDER, padded_h - 1 - b, bot_px);
-            }
-        }
-        for y in 0..crop_h {
-            let left_px = *img_crop.get_pixel(0, y);
-            let right_px = *img_crop.get_pixel(crop_w.saturating_sub(1), y);
-            for b in 0..BORDER {
-                padded.put_pixel(b, y + BORDER, left_px);
-                padded.put_pixel(padded_w - 1 - b, y + BORDER, right_px);
-            }
-        }
-        // Corners: replicate corner pixels
-        let tl = *img_crop.get_pixel(0, 0);
-        let tr = *img_crop.get_pixel(crop_w.saturating_sub(1), 0);
-        let bl = *img_crop.get_pixel(0, crop_h.saturating_sub(1));
-        let br = *img_crop.get_pixel(crop_w.saturating_sub(1), crop_h.saturating_sub(1));
-        for by in 0..BORDER {
-            for bx in 0..BORDER {
-                padded.put_pixel(bx, by, tl);
-                padded.put_pixel(padded_w - 1 - bx, by, tr);
-                padded.put_pixel(bx, padded_h - 1 - by, bl);
-                padded.put_pixel(padded_w - 1 - bx, padded_h - 1 - by, br);
-            }
-        }
-
-        // Adjust source control points by +BORDER to account for the padded image
         let src_points = [
-            (points[0].x as f32 + BORDER as f32, points[0].y as f32 + BORDER as f32),
-            (points[1].x as f32 + BORDER as f32, points[1].y as f32 + BORDER as f32),
-            (points[2].x as f32 + BORDER as f32, points[2].y as f32 + BORDER as f32),
-            (points[3].x as f32 + BORDER as f32, points[3].y as f32 + BORDER as f32),
+            (points[0].x as f32, points[0].y as f32),
+            (points[1].x as f32, points[1].y as f32),
+            (points[2].x as f32, points[2].y as f32),
+            (points[3].x as f32, points[3].y as f32),
         ];
 
         let dst_points = [
@@ -179,7 +125,7 @@ impl OcrUtils {
 
         let mut part_img = image::RgbImage::new(img_crop_width, img_crop_height);
         imageproc::geometric_transformations::warp_into(
-            &padded,
+            &img_crop,
             &projection,
             Interpolation::Bilinear,
             image::Rgb([255, 255, 255]),

@@ -42,14 +42,12 @@ impl ScaleParam {
         dst_width = (src_width as f32 * ratio) as u32;
         dst_height = (src_height as f32 * ratio) as u32;
 
-        // Round to nearest multiple of 32 (matches Python PaddleOCR behavior).
-        // Previous code truncated to floor, which could lose significant pixels.
         if dst_width % 32 != 0 {
-            dst_width = ((dst_width + 16) / 32) * 32;
+            dst_width = (dst_width / 32) * 32;
             dst_width = dst_width.max(32);
         }
         if dst_height % 32 != 0 {
-            dst_height = ((dst_height + 16) / 32) * 32;
+            dst_height = (dst_height / 32) * 32;
             dst_height = dst_height.max(32);
         }
 
