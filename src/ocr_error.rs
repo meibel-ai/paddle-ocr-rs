@@ -2,12 +2,12 @@ use thiserror::Error;
 
 #[derive(Error, Debug)]
 pub enum OcrError {
-    #[error("Ort error")]
+    #[error("Ort error: {0}")]
     Ort(#[from] ort::Error),
-    #[error("Io error")]
+    #[error("Io error: {0}")]
     Io(#[from] std::io::Error),
-    #[error("Session not initialized")]
+    #[error("Image error: {0}")]
     ImageError(#[from] image::ImageError),
-    #[error("Image error")]
+    #[error("Session not initialized")]
     SessionNotInitialized,
 }
