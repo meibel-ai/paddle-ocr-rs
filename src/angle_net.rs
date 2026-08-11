@@ -84,7 +84,7 @@ impl AngleNet {
         let input_tensors = Tensor::from_array(input_tensors)?;
 
         // [downport rc.11→rc.9] inputs! macro ritorna Result in rc.9
-        let outputs = session.run(inputs![self.input_names[0].clone() => input_tensors]?)?;
+        let outputs = session.run(inputs![self.input_names[0].clone() => input_tensors])?;
 
         let angle = Self::score_to_angle(&outputs, ANGLE_COLS)?;
 

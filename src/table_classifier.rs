@@ -69,11 +69,11 @@ impl TableTypeClassifier {
 
     /// Classifica l'immagine come `Wired` o `Wireless`.
     /// Ritorna `(tipo, confidence)`.
-    pub fn classify(&self, image: &image::RgbImage) -> Result<(TableType, f32), OcrError> {
+    pub fn classify(&mut self, image: &image::RgbImage) -> Result<(TableType, f32), OcrError> {
         let blob = preprocess_lcnet(image);
-        let name = self.session.inputs[0].name.clone();
+        let name = self.session.inputs()[0].name().to_string();
         let outputs = self.session.run(
-            inputs![name => Tensor::from_array(blob)?]?
+            inputs![name => Tensor::from_array(blob)?]
         )?;
         let (_, first) = outputs.iter().next()
             .ok_or_else(|| OcrError::ModelOutput("TableTypeCls: nessun output".into()))?;
@@ -148,11 +148,11 @@ impl DocOrientationClassifier {
     /// `ResizeImage(resize_short=256)` + `CropImage(size=224)` + ImageNet.
     /// Lo stretch diretto a 224×224 (errato) confonde pagine portrait
     /// già dritte con 90°/180° a bassa confidenza.
-    pub fn classify(&self, image: &image::RgbImage) -> Result<(DocOrientation, f32), OcrError> {
+    pub fn classify(&mut self, image: &image::RgbImage) -> Result<(DocOrientation, f32), OcrError> {
         let blob = preprocess_doc_ori(image);
-        let name = self.session.inputs[0].name.clone();
+        let name = self.session.inputs()[0].name().to_string();
         let outputs = self.session.run(
-            inputs![name => Tensor::from_array(blob)?]?
+            inputs![name => Tensor::from_array(blob)?]
         )?;
         let (_, first) = outputs.iter().next()
             .ok_or_else(|| OcrError::ModelOutput("DocOriCls: nessun output".into()))?;

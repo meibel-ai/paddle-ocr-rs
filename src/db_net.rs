@@ -73,7 +73,7 @@ impl DbNet {
         // [downport rc.11→rc.9] in rc.9 il macro `inputs![...]` ritorna
         // un `Result<Vec<(Cow<str>, SessionInputValue)>>` che va `?`-unwrapped
         // prima di passare a `session.run`.
-        let outputs = session.run(inputs![self.input_names[0].clone() => tensor]?)?;
+        let outputs = session.run(inputs![self.input_names[0].clone() => tensor])?;
 
         let text_boxes = Self::get_text_boxes_core(
             &outputs,

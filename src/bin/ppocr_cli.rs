@@ -40,12 +40,12 @@
 //! | `PPOCR_TIER`         | `tiny` (solo mode `full`)                    |
 //! | `PPOCR_NUM_THREADS`  | `4`                                          |
 
-use crate::pipeline::layout::{
+use paddle_ocr_rs::pipeline::layout::{
     self as pipe_layout, HeadingOptions, LayoutModelSpec, OcrSkipOptions,
 };
-use crate::pipeline::preprocess::{preprocess_rgba_level, PreprocessLevel};
-use crate::pipeline::BoundingBox as PipelineBBox;
-use ppocr_rs::{
+use paddle_ocr_rs::pipeline::preprocess::{preprocess_rgba_level, PreprocessLevel};
+use paddle_ocr_rs::pipeline::BoundingBox as PipelineBBox;
+use paddle_ocr_rs::{
     DocOrientation, DocOrientationClassifier, LayoutAnalyzer, LayoutBox, ModelHub, OcrLite,
     OcrOptions, Point, PpOcrVersion, PpStructureModel, SemanticClass,
 };
@@ -227,7 +227,7 @@ fn run_full(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
         .into());
     }
 
-    let ori_clf = DocOrientationClassifier::from_path(&ori_path)?;
+    let mut ori_clf = DocOrientationClassifier::from_path(&ori_path)?;
     let (orient, _conf) = ori_clf.classify(&img)?;
     let page_angle = orient.degrees();
     let upright = rotate_to_upright(img, orient);
@@ -316,7 +316,7 @@ fn run_ori_layout(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
         .into());
     }
 
-    let ori_clf = DocOrientationClassifier::from_path(&ori_path)?;
+    let mut ori_clf = DocOrientationClassifier::from_path(&ori_path)?;
     let (orient, _conf) = ori_clf.classify(&img)?;
     let page_angle = orient.degrees();
     let mut upright = rotate_to_upright(img, orient);

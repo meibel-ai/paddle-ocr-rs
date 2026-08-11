@@ -608,7 +608,7 @@ impl OcrLite {
     ) -> Result<OcrResult, OcrError> {
         // ── Orientamento pagina ─────────────────────────────────────────────
         if options.use_doc_orientation {
-            match &self.doc_orientation_clf {
+            match &mut self.doc_orientation_clf {
                 None => {} // modello non caricato: salta silenziosamente
                 Some(clf) => {
                     let (orient, _conf) = clf.classify(img_src)?;

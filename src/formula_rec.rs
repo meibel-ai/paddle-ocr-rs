@@ -239,7 +239,8 @@ impl FormulaRecognizer {
     ///
     /// `image` deve essere il crop della regione formula (da `LayoutAnalyzer`
     /// con `LayoutClass::DisplayFormula` o `InlineFormula`).
-    pub fn recognize(&self, image: &image::RgbImage) -> Result<FormulaResult, OcrError> {
+    // [ort rc.13] `Session::run` richiede `&mut self`: il metodo si adegua.
+    pub fn recognize(&mut self, image: &image::RgbImage) -> Result<FormulaResult, OcrError> {
         if !self.decoder_enabled {
             return Ok(FormulaResult { latex: String::new(), score: 0.0 });
         }
@@ -254,9 +255,9 @@ impl FormulaRecognizer {
 
     // ── Single-pass ─────────────────────────────────────────────────────────
 
-    fn recognize_single_pass(&self, blob: Array4<f32>) -> Result<FormulaResult, OcrError> {
+    fn recognize_single_pass(&mut self, blob: Array4<f32>) -> Result<FormulaResult, OcrError> {
         let outputs = self.session.run(
-            inputs![self.img_input.clone() => Tensor::from_array(blob)?]?
+            inputs![self.img_input.clone() => Tensor::from_array(blob)?]
         )?;
 
         let (_, first) = outputs.iter().next()
@@ -302,14 +303,14 @@ impl FormulaRecognizer {
 
     // ── Autoregressive ───────────────────────────────────────────────────────
 
-    fn recognize_autoregressive(&self, blob: Array4<f32>) -> Result<FormulaResult, OcrError> {
+    fn recognize_autoregressive(&mut self, blob: Array4<f32>) -> Result<FormulaResult, OcrError> {
         // Trova il nome del tensore decoder_input_ids
-        let dec_input_name = self.session.inputs.iter()
+        let dec_input_name = self.session.inputs().iter()
             .find(|i| {
-                let n = i.name.to_lowercase();
+                let n = i.name().to_lowercase();
                 n.contains("decoder") || n.contains("input_ids") || n.contains("tgt")
             })
-            .map(|i| i.name.clone())
+            .map(|i| i.name().to_string())
             .unwrap_or_else(|| "decoder_input_ids".to_string());
 
         let mut ids: Vec<i64>   = vec![BOS_ID];
@@ -326,7 +327,7 @@ impl FormulaRecognizer {
             let outputs = self.session.run(inputs![
                 self.img_input.clone() => Tensor::from_array(blob.clone())?,
                 dec_input_name.clone() => Tensor::from_array(dec_arr)?,
-            ]?)?;
+            ])?;
 
             let (_, last_out) = outputs.iter().next()
                 .ok_or_else(|| OcrError::ModelOutput("FormulaNet auto: nessun output".into()))?;
@@ -385,8 +386,8 @@ fn preprocess(image: &image::RgbImage) -> Array4<f32> {
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
 fn detect_inference_mode(session: &Session) -> InferenceMode {
-    let has_dec_input = session.inputs.iter().any(|i| {
-        let n = i.name.to_lowercase();
+    let has_dec_input = session.inputs().iter().any(|i| {
+        let n = i.name().to_lowercase();
         n.contains("decoder") || n.contains("input_ids") || n.contains("tgt")
     });
     if has_dec_input {
@@ -397,13 +398,13 @@ fn detect_inference_mode(session: &Session) -> InferenceMode {
 }
 
 fn find_image_input(session: &Session) -> String {
-    session.inputs.iter()
+    session.inputs().iter()
         .find(|i| {
-            let n = i.name.to_lowercase();
+            let n = i.name().to_lowercase();
             n == "x" || n == "image" || n == "img" || n.contains("pixel")
         })
-        .or_else(|| session.inputs.first())
-        .map(|i| i.name.clone())
+        .or_else(|| session.inputs().first())
+        .map(|i| i.name().to_string())
         .unwrap_or_else(|| "x".to_string())
 }
 

@@ -307,7 +307,7 @@ impl LayoutAnalyzer {
 
         // ── Step 2: inference — input in base a cosa espone la sessione ─
         // S ha [image, scale_factor]; V3 ha [im_shape, image, scale_factor].
-        let names: Vec<String> = self.session.inputs.iter().map(|i| i.name.clone()).collect();
+        let names: Vec<String> = self.session.inputs().iter().map(|i| i.name().to_string()).collect();
         if names.is_empty() {
             return Err(OcrError::ModelInput("layout: sessione senza input".into()));
         }
@@ -332,12 +332,12 @@ impl LayoutAnalyzer {
                     nis        => im_shape_t,
                     name_image => image_t,
                     name_scale => sf_t,
-                ]?)?
+                ])?
             }
             None => self.session.run(inputs![
                 name_image => image_t,
                 name_scale => sf_t,
-            ]?)?,
+            ])?,
         };
 
         // ── Step 3: parse output primario [N, 6|7] ──────────────────────

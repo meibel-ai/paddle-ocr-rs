@@ -20,3 +20,13 @@ pub enum OcrError {
     #[error("Model hub error: {0}")]
     ModelHubError(String),
 }
+
+// [ort rc.13] `ort::Error` e' diventato generico su un parametro di *recupero*:
+// `SessionBuilder::commit_*` restituisce `Error<SessionBuilder>` (che consente di riprendere il
+// builder dopo il fallimento) invece del piatto `Error`. `ort` fornisce la conversione verso
+// `Error<()>`; qui la si aggancia a `OcrError` cosi' il `?` continua a funzionare nei chiamanti.
+impl From<ort::Error<ort::session::builder::SessionBuilder>> for OcrError {
+    fn from(e: ort::Error<ort::session::builder::SessionBuilder>) -> Self {
+        OcrError::Ort(ort::Error::from(e))
+    }
+}

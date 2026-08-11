@@ -107,7 +107,8 @@ impl DocUnwarper {
     /// il modello riduce internamente a ~488×712 per l'estrazione features,
     /// poi upsampling la griglia alle dimensioni originali e applica il
     /// grid_sample sull'immagine originale ad alta risoluzione.
-    pub fn unwarp(&self, image: &image::RgbImage) -> Result<UnwarpResult, OcrError> {
+    // [ort rc.13] `Session::run` richiede `&mut self`: il metodo si adegua.
+    pub fn unwarp(&mut self, image: &image::RgbImage) -> Result<UnwarpResult, OcrError> {
         if !self.enabled {
             return Ok(UnwarpResult { image: image.clone(), is_direct_output: true });
         }
@@ -119,10 +120,10 @@ impl DocUnwarper {
         // Il modello gestisce internamente la riduzione di risoluzione per il
         // backbone e restituisce output alle dimensioni originali.
         let blob = preprocess_normalize_only(image);
-        let input_name = self.session.inputs[0].name.clone();
+        let input_name = self.session.inputs()[0].name().to_string();
 
         let outputs = self.session.run(
-            inputs![input_name => Tensor::from_array(blob)?]?
+            inputs![input_name => Tensor::from_array(blob)?]
         )?;
 
         let (_, first_out) = outputs.iter().next()

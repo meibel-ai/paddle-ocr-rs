@@ -1,37 +1,29 @@
-//! Compat shim per la differenza API `try_extract_tensor` tra ort
-//! 2.0.0-rc.9 (qui pinnato) e 2.0.0-rc.11 (paddle-ocr-rs upstream).
+//! Compat shim per l'estrazione dei tensori: isola in **un solo punto** la differenza di firma
+//! di `Value::try_extract_tensor` fra le release candidate di `ort`.
 //!
-//! ## Differenza API
+//! ## Storia della firma
 //!
-//! In **rc.11** la firma di `Value::try_extract_tensor::<T>()` ritorna una
-//! tupla `(Vec<i64>, &[T])` con shape e raw slice — pratico ma rotto rispetto
-//! a rc.9.
+//! - **rc.9**: `Result<ArrayViewD<T>, ort::Error>` — shape e dati si ricavano dalla view.
+//! - **rc.11+ (incluso rc.13, qui pinnato)**: `Result<(&Shape, &[T])>` — tupla con shape e slice.
 //!
-//! In **rc.9** la firma ritorna `Result<ArrayViewD<T>, ort::Error>`. Per
-//! ottenere shape e dati separatamente serve `view.shape().to_vec()` +
-//! `view.iter().copied().collect()` o `into_owned().into_raw_vec()`.
-//!
-//! Questo modulo isola la differenza in un unico punto. `ort rc.9` è la
-//! versione target permanente del workspace (rc.11+ si blocca su ARM64
-//! Snapdragon X Elite), quindi questo shim è stabile e non verrà rimosso.
+//! Il crate e' nato su rc.9 e questo modulo adattava rc.11→rc.9; con l'aggiornamento a **rc.13**
+//! il verso si e' invertito: adatta la tupla di rc.13 alle stesse due funzioni di prima. I circa
+//! otto punti d'uso non sono stati toccati — ed e' esattamente il motivo per cui lo shim esiste:
+//! un cambio di firma a monte si assorbe qui, non sparso nel codice.
 
-use ort::value::Value;
 use crate::ocr_error::OcrError;
+use ort::value::Value;
 
 /// Estrae un tensore f32 come `Vec<f32>`, scartando la shape.
-/// Equivalente al `try_extract_tensor::<f32>()?.1.to_vec()` di rc.11.
 pub fn tensor_to_vec_f32(value: &Value) -> Result<Vec<f32>, OcrError> {
-    let view = value.try_extract_tensor::<f32>()?;
-    Ok(view.iter().copied().collect())
+    let (_shape, data) = value.try_extract_tensor::<f32>()?;
+    Ok(data.to_vec())
 }
 
 /// Estrae un tensore f32 con la shape (per output di shape variabile).
-/// Equivalente al `let (shape, data) = try_extract_tensor::<f32>()?;` di rc.11.
-///
-/// Ritorna `(shape, data)` con shape già copiata in `Vec<i64>`.
+/// Ritorna `(shape, data)` con la shape gia' copiata in `Vec<i64>`.
 pub fn tensor_extract_with_shape_f32(value: &Value) -> Result<(Vec<i64>, Vec<f32>), OcrError> {
-    let view = value.try_extract_tensor::<f32>()?;
-    let shape: Vec<i64> = view.shape().iter().map(|&d| d as i64).collect();
-    let data:  Vec<f32> = view.iter().copied().collect();
-    Ok((shape, data))
+    let (shape, data) = value.try_extract_tensor::<f32>()?;
+    let shape: Vec<i64> = shape.iter().map(|&d| d as i64).collect();
+    Ok((shape, data.to_vec()))
 }

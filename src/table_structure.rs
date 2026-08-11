@@ -159,8 +159,9 @@ impl TableStructureRecognizer {
     /// `image` deve essere il crop della regione tabella (da `LayoutAnalyzer`
     /// o crop manuale). Per tabelle wired usa `SLANeXt_wired_onnx`;
     /// per wireless usa `SLANeXt_wireless_onnx`.
+    // [ort rc.13] `Session::run` richiede `&mut self`.
     pub fn recognize(
-        &self,
+        &mut self,
         image: &image::RgbImage,
     ) -> Result<TableStructure, OcrError> {
         let orig_w = image.width() as f32;
@@ -170,9 +171,9 @@ impl TableStructureRecognizer {
         let (blob, ratio_w, ratio_h) = preprocess_slanext(image, self.input_size);
 
         // ── Inference ──────────────────────────────────────────────────────
-        let input_name = self.session.inputs[0].name.clone();
+        let input_name = self.session.inputs()[0].name().to_string();
         let outputs = self.session.run(
-            inputs![input_name => Tensor::from_array(blob)?]?
+            inputs![input_name => Tensor::from_array(blob)?]
         )?;
 
         // ── Match output → structure_probs (sp) e loc_preds (lp) ──────────────

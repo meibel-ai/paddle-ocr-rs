@@ -108,9 +108,10 @@ impl CrnnNet {
             .expect("crnn_net session not initialized")
             .metadata()
             .expect("crnn_net metadata not initialized")
+            // [ort rc.13] `custom()` torna `Option<String>`; in rc.9 era `Result<Option<String>>`
+            // e serviva un doppio unwrap.
             .custom("character")
-            .expect("crnn_net character meta not found")
-            .expect("crnn_net character meta is None");
+            .expect("crnn_net character meta not found");
 
         let mut keys = Vec::with_capacity((model_charater_list.len() as f32 / 3.9) as usize);
 
@@ -273,7 +274,7 @@ impl CrnnNet {
         let input_tensors = Tensor::from_array(input_tensors)?;
 
         // [downport rc.11→rc.9] inputs! macro ritorna Result in rc.9
-        let outputs = session.run(inputs![self.input_names[0].clone() => input_tensors]?)?;
+        let outputs = session.run(inputs![self.input_names[0].clone() => input_tensors])?;
 
         let (_, red_data) = outputs.iter().next().unwrap();
 

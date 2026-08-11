@@ -85,8 +85,8 @@ impl CellDetector {
 
         // Risolvi i nomi degli input via match-by-name (default ordine
         // canonico Paddle se i nomi non matchano).
-        let inputs_meta: Vec<String> = self.session.inputs.iter()
-            .map(|i| i.name.clone()).collect();
+        let inputs_meta: Vec<String> = self.session.inputs().iter()
+            .map(|i| i.name().to_string()).collect();
         if inputs_meta.len() < 3 {
             return Err(OcrError::ModelInput(format!(
                 "RT-DETR-L cell det si aspetta ≥3 input, trovati {} ({:?})",
@@ -106,7 +106,7 @@ impl CellDetector {
             name_im_shape     => Tensor::from_array(im_shape)?,
             name_image        => Tensor::from_array(input_blob)?,
             name_scale_factor => Tensor::from_array(scale_factor)?,
-        ]?)?;
+        ])?;
 
         // Output canonical: shape `[N, 6]` Float32 con
         //   [class_id, score, x1, y1, x2, y2]

@@ -33,9 +33,9 @@ pub trait BaseNet {
         // sono field pubblici di Session, e i singoli `Input` espongono
         // `name` come campo `String` (non metodo `&str`).
         let input_names: Vec<String> = session
-            .inputs
+            .inputs()
             .iter()
-            .map(|input| input.name.clone())
+            .map(|input| input.name().to_string())
             .collect();
 
         self.set_input_names(input_names);
