@@ -1,5 +1,8 @@
 # ─────────────────────────────────────────────────────────────────────────────
-# ppocr-rs — pipeline OCR PaddleOCR **nativa** (ort), target: applicazioni desktop/server.
+# paddle-ocr-rs — pipeline OCR PaddleOCR **nativa** (ort), target: applicazioni desktop/server.
+# Il nome del crate e' quello storico di questo fork: NON va cambiato (i consumatori che
+# preferiscono l'alias `ppocr_rs` usano il rinominamento di dipendenza di Cargo,
+# `ppocr-rs = { package = "paddle-ocr-rs", ... }`).
 #
 # PROVENIENZA (catena completa)
 #   RapidOcrOnnx (C++/OpenCV, riferimento algoritmico)
@@ -20,7 +23,7 @@
 # ─────────────────────────────────────────────────────────────────────────────
 
 [package]
-name        = "ppocr-rs"
+name        = "paddle-ocr-rs"
 version     = "0.7.3"
 edition     = "2021"
 description = "PP-OCRv6 + PP-DocLayoutV3 + SLANet_plus + RT-DETR-L + PP-LCNet in puro Rust su ort 2.0.0-rc.9. Fork di meibel-ai/paddle-ocr-rs (Apache-2.0) con layout, table structure, cell detection e orientamento documento."
