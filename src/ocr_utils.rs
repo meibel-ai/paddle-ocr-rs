@@ -177,4 +177,128 @@ impl OcrUtils {
 
         sum / mask_count as f32
     }
+
+    /// Centroide (x, y) di un poligono. Usato per associare text-block a
+    /// layout-box (containment via centroid + nearest-neighbor su orphan).
+    /// Ritorna `(0, 0)` se il poligono è vuoto.
+    pub fn polygon_centroid(points: &[Point]) -> (u32, u32) {
+        if points.is_empty() { return (0, 0); }
+        let n = points.len() as u32;
+        let sx: u32 = points.iter().map(|p| p.x).sum();
+        let sy: u32 = points.iter().map(|p| p.y).sum();
+        (sx / n, sy / n)
+    }
+
+    /// Inversa della trasformazione applicata da `get_rotate_crop_image`:
+    /// dato il polygon DBNet della linea (4 corner nello spazio
+    /// dell'immagine originale) e un rettangolo `(crop_w, crop_h)` (il
+    /// rettangolo target del crop+warp), trasforma 4 punti dal CROP-SPACE
+    /// (rettangolo) all'IMAGE-SPACE (polygon).
+    ///
+    /// Usato per riportare i word-box dal CRNN-cropped-line space allo
+    /// spazio dell'immagine originale.
+    ///
+    /// `quad_in_crop` è array di 4 `(x, y)` in `[0..crop_w] × [0..crop_h]`.
+    /// Ritorna 4 `Point` clampati a `u32`. Se la `Projection::invert()`
+    /// fallisce (raro: polygon degenerato), ritorna `None`.
+    ///
+    /// **Nota**: questa funzione NON gestisce la rotazione 90° applicata
+    /// quando `crop_h >= crop_w * 3/2` (vedi `get_rotate_crop_image`).
+    /// Per quelle linee, il chiamante deve saltare il word-level (testo
+    /// verticale, edge case non supportato).
+    pub fn inverse_warp_quad(
+        line_polygon: &[Point; 4],
+        crop_size: (u32, u32),
+        quad_in_crop: &[(f32, f32); 4],
+    ) -> Option<[Point; 4]> {
+        // Replica la stessa logica di get_rotate_crop_image: shift al
+        // (min_x, min_y) del polygon e lavora in coordinate relative.
+        let (min_x, min_y, _, _) = line_polygon.iter().fold(
+            (u32::MAX, u32::MAX, 0u32, 0u32),
+            |(mn_x, mn_y, mx_x, mx_y), p| (mn_x.min(p.x), mn_y.min(p.y), mx_x.max(p.x), mx_y.max(p.y)),
+        );
+        let src_points: [(f32, f32); 4] = [
+            ((line_polygon[0].x - min_x) as f32, (line_polygon[0].y - min_y) as f32),
+            ((line_polygon[1].x - min_x) as f32, (line_polygon[1].y - min_y) as f32),
+            ((line_polygon[2].x - min_x) as f32, (line_polygon[2].y - min_y) as f32),
+            ((line_polygon[3].x - min_x) as f32, (line_polygon[3].y - min_y) as f32),
+        ];
+        let (cw, ch) = (crop_size.0 as f32, crop_size.1 as f32);
+        let dst_points: [(f32, f32); 4] = [
+            (0.0, 0.0),
+            (cw,  0.0),
+            (cw,  ch),
+            (0.0, ch),
+        ];
+
+        // get_rotate_crop_image usa Projection::from_control_points(src, dst)
+        // per andare polygon→rect. Per andare rect→polygon serviamo l'inversa.
+        let proj = imageproc::geometric_transformations::Projection::from_control_points(
+            src_points, dst_points,
+        )?.invert();
+
+        let mut out = [Point { x: 0, y: 0 }; 4];
+        for (i, &(qx, qy)) in quad_in_crop.iter().enumerate() {
+            let (mapped_x, mapped_y) = proj * (qx, qy);
+            // Aggiungi back l'offset (min_x, min_y) per ritornare al sistema
+            // dell'immagine originale.
+            let abs_x = (mapped_x.max(0.0) as u32).saturating_add(min_x);
+            let abs_y = (mapped_y.max(0.0) as u32).saturating_add(min_y);
+            out[i] = Point { x: abs_x, y: abs_y };
+        }
+        Some(out)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn inverse_warp_axis_aligned_roundtrip() {
+        // Polygon axis-aligned 100×30 a (50, 200).
+        let poly = [
+            Point { x: 50,  y: 200 },
+            Point { x: 150, y: 200 },
+            Point { x: 150, y: 230 },
+            Point { x: 50,  y: 230 },
+        ];
+        let crop_size = (200u32, 60u32); // mappato su rect 200×60
+
+        // Quad: il word "Hello" copre x=[40, 80] del crop.
+        let word_quad = [(40.0, 0.0), (80.0, 0.0), (80.0, 60.0), (40.0, 60.0)];
+        let result = OcrUtils::inverse_warp_quad(&poly, crop_size, &word_quad).unwrap();
+
+        // Atteso: x = 50 + (40/200)*100 = 70, x = 50 + (80/200)*100 = 90, y full poly height.
+        assert_eq!(result[0].x, 70);
+        assert_eq!(result[0].y, 200);
+        assert_eq!(result[1].x, 90);
+        assert_eq!(result[1].y, 200);
+        assert_eq!(result[2].x, 90);
+        assert_eq!(result[2].y, 230);
+        assert_eq!(result[3].x, 70);
+        assert_eq!(result[3].y, 230);
+    }
+
+    #[test]
+    fn inverse_warp_corners_match_polygon() {
+        // Quad = full crop → deve mappare ai 4 corner del polygon.
+        let poly = [
+            Point { x: 100, y: 50 },
+            Point { x: 300, y: 60 },
+            Point { x: 295, y: 90 },
+            Point { x: 95,  y: 80 },
+        ];
+        let crop_size = (200u32, 30u32);
+        let full_crop = [(0.0, 0.0), (200.0, 0.0), (200.0, 30.0), (0.0, 30.0)];
+        let result = OcrUtils::inverse_warp_quad(&poly, crop_size, &full_crop).unwrap();
+
+        // Tolerance ±2 px per arrotondamenti f32→u32.
+        for (i, p) in result.iter().enumerate() {
+            let dx = (p.x as i32 - poly[i].x as i32).abs();
+            let dy = (p.y as i32 - poly[i].y as i32).abs();
+            assert!(dx <= 2, "corner {i} x: got {} expected {} (Δ={})", p.x, poly[i].x, dx);
+            assert!(dy <= 2, "corner {i} y: got {} expected {} (Δ={})", p.y, poly[i].y, dy);
+        }
+    }
 }

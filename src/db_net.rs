@@ -70,7 +70,10 @@ impl DbNet {
 
         let tensor = Tensor::from_array(input_tensors)?;
 
-        let outputs = session.run(inputs![self.input_names[0].clone() => tensor])?;
+        // [downport rc.11→rc.9] in rc.9 il macro `inputs![...]` ritorna
+        // un `Result<Vec<(Cow<str>, SessionInputValue)>>` che va `?`-unwrapped
+        // prima di passare a `session.run`.
+        let outputs = session.run(inputs![self.input_names[0].clone() => tensor]?)?;
 
         let text_boxes = Self::get_text_boxes_core(
             &outputs,
@@ -106,7 +109,9 @@ impl DbNet {
 
         let (_, red_data) = output_tensor.iter().next().unwrap();
 
-        let pred_data: Vec<f32> = red_data.try_extract_tensor::<f32>()?.1.to_vec();
+        // [downport rc.11→rc.9] in rc.11 try_extract_tensor ritorna `(Vec<i64> shape, &[T] data)`,
+        // in rc.9 ritorna `ArrayViewD<T>`. Compat helper: vedi src/compat.rs::tensor_to_vec.
+        let pred_data: Vec<f32> = crate::compat::tensor_to_vec_f32(&red_data)?;
 
         let cbuf_data: Vec<u8> = pred_data
             .iter()

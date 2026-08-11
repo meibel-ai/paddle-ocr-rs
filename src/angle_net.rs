@@ -83,7 +83,8 @@ impl AngleNet {
 
         let input_tensors = Tensor::from_array(input_tensors)?;
 
-        let outputs = session.run(inputs![self.input_names[0].clone() => input_tensors])?;
+        // [downport rc.11→rc.9] inputs! macro ritorna Result in rc.9
+        let outputs = session.run(inputs![self.input_names[0].clone() => input_tensors]?)?;
 
         let angle = Self::score_to_angle(&outputs, ANGLE_COLS)?;
 
@@ -96,7 +97,8 @@ impl AngleNet {
     ) -> Result<Angle, OcrError> {
         let (_, red_data) = output_tensor.iter().next().unwrap();
 
-        let src_data: Vec<f32> = red_data.try_extract_tensor::<f32>()?.1.to_vec();
+        // [downport rc.11→rc.9]
+        let src_data: Vec<f32> = crate::compat::tensor_to_vec_f32(&red_data)?;
 
         let mut angle = Angle::default();
         let mut max_value = f32::MIN;

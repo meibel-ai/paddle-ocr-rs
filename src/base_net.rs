@@ -29,10 +29,13 @@ pub trait BaseNet {
     fn set_session(&mut self, session: Option<Session>);
 
     fn init(&mut self, session: Session) {
+        // [downport rc.11→rc.9] in rc.11 inputs/outputs sono metodi; in rc.9
+        // sono field pubblici di Session, e i singoli `Input` espongono
+        // `name` come campo `String` (non metodo `&str`).
         let input_names: Vec<String> = session
-            .inputs()
+            .inputs
             .iter()
-            .map(|input| input.name().to_string())
+            .map(|input| input.name.clone())
             .collect();
 
         self.set_input_names(input_names);
