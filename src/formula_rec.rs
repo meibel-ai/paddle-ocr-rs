@@ -27,7 +27,7 @@
 //! ## Uso
 //!
 //! ```no_run
-//! use ppocr_rs::{ModelHub, PpStructureModel, FormulaRecognizer};
+//! use paddle_ocr_rs::{ModelHub, PpStructureModel, FormulaRecognizer};
 //! let hub   = ModelHub::with_default_cache().unwrap();
 //! let paths = hub.ensure_single(PpStructureModel::FormulaRec).unwrap();
 //! let rec   = FormulaRecognizer::from_paths(

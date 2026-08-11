@@ -265,7 +265,7 @@ impl ModelHub {
     /// ## Esempio
     ///
     /// ```no_run
-    /// use ppocr_rs::{ModelHub, PpStructureModel};
+    /// use paddle_ocr_rs::{ModelHub, PpStructureModel};
     /// let hub = ModelHub::with_default_cache().unwrap();
     /// let paths = hub.ensure_single(PpStructureModel::TableCls).unwrap();
     /// // usa paths.onnx con TableTypeClassifier::from_path(paths.onnx)

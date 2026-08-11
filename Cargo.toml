@@ -52,7 +52,10 @@ exclude     = ["docs/", "tools/", "tests/", "ocr_test/", ".env", ".env.*"]
 # modifica al return type di `try_extract_tensor` (vedi src/compat.rs).
 # QNN escluso: bench su Snapdragon X Elite mostra che PP-OCRv6 non
 # beneficia di Hexagon NPU (postprocessing CPU-bound + shape dinamiche).
-ort        = { version = "=2.0.0-rc.13", default-features = false, features = ["ndarray", "directml", "coreml", "cuda", "xnnpack"] }
+# `std` è indispensabile con default-features = false: da rc.13 `SessionBuilder::commit_from_file`
+# vive dietro quella feature. Senza, il crate compila solo dentro un workspace che la attiva per
+# altra via (era il nostro caso: arrivava da pageindex-rs) e fallisce se costruito da solo.
+ort        = { version = "=2.0.0-rc.13", default-features = false, features = ["std", "ndarray", "directml", "coreml", "cuda", "xnnpack"] }
 ort-sys    = "=2.0.0-rc.13"
 
 # ─── Numerica & immagini ───
