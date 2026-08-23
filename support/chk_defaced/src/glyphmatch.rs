@@ -45,6 +45,15 @@ pub fn legitimately_identical(a: char, b: char) -> bool {
     if a.to_string().nfkd().eq(b.to_string().nfkd()) {
         return true;
     }
+    // A ligature draws several letters with a single glyph, so reaching that glyph from the first
+    // of those letters is how a font encodes it, not a semantic swap: 'ﬁ' extracted as 'f' is the
+    // normal case on any LaTeX or InDesign document, and NFKD equality above cannot see it (the
+    // decomposition is two characters long). Deliberately narrow — the decomposition must *start*
+    // with the other character, so 'ﬁ' from 'x' is still a finding. The specimen path already
+    // excludes ligatures outright for the same reason (`specimen.rs`: guaranteed false positive).
+    if ligature_of(a, b) || ligature_of(b, a) {
+        return true;
+    }
     // Same ASCII base (ð / đ / ɖ → "d", ø → "o"): confusable variants of one base letter, not a swap.
     if let (Some(x), Some(y)) = (deunicode::deunicode_char(a), deunicode::deunicode_char(b)) {
         if !x.is_empty() && x == y {
@@ -57,6 +66,13 @@ pub fn legitimately_identical(a: char, b: char) -> bool {
         return true;
     }
     skel(a) == skel(b)
+}
+
+/// `true` when `ligature` decomposes into several characters and `base` is the first of them.
+fn ligature_of(ligature: char, base: char) -> bool {
+    let text = ligature.to_string();
+    let mut decomposed = text.nfkd();
+    decomposed.next() == Some(base) && decomposed.next().is_some()
 }
 
 /// Case-insensitive variant used by the specimen path, where an OCR read and the document's claimed
@@ -77,6 +93,20 @@ mod tests {
         assert_eq!(letter_latin('é' as u32), Some('é'));
         assert_eq!(letter_latin('Α' as u32), None); // Greek
         assert_eq!(letter_latin('1' as u32), None); // digit
+    }
+
+    #[test]
+    fn ligatures_are_not_semantic_replacements() {
+        // Every 'fi'/'fl' ligature in a LaTeX or InDesign document is reached from 'f'; flagging
+        // those produced High findings on clean papers (measured: 8 on one 126-page document).
+        for ligature in ['ﬀ', 'ﬁ', 'ﬂ', 'ﬃ', 'ﬄ'] {
+            assert!(legitimately_identical(ligature, 'f'), "{ligature} is drawn for an 'f'");
+            assert!(legitimately_identical('f', ligature), "the check is symmetric");
+        }
+        // The guard stays narrow: a ligature reached from a letter it does not start with is
+        // still a substitution, and so is the 'l' a 'ﬁ' also draws.
+        assert!(!legitimately_identical('ﬁ', 'x'));
+        assert!(!legitimately_identical('ﬄ', 'l'));
     }
 
     #[test]

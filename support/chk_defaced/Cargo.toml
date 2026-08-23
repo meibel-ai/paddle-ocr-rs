@@ -137,7 +137,7 @@ version = "0.25"
 optional = true
 
 [dependencies.lopdf]
-version = "0.36"
+version = "0.44"
 
 [dependencies.pdfium-render]
 version = "0.8.37"
@@ -217,5 +217,3 @@ version = "2"
 features = ["deflate"]
 default-features = false
 
-[profile.release]
-opt-level = 2

@@ -153,7 +153,13 @@ fn subset_parts(base: &str) -> (Option<&str>, &str) {
 
 pub fn scan(path: &Path, registry: Option<&FontRegistry>) -> Result<Report> {
     let doc = Document::load(path).with_context(|| format!("opening PDF {}", path.display()))?;
-    let mut report = Report::new(&path.display().to_string(), "pdf");
+    scan_doc(&doc, &path.display().to_string(), registry)
+}
+
+/// Scan an **already-loaded** document. Split out of [`scan`] so a caller that holds the
+/// `lopdf::Document` (same lopdf version across the tree) pays for a single parse.
+pub fn scan_doc(doc: &Document, label: &str, registry: Option<&FontRegistry>) -> Result<Report> {
+    let mut report = Report::new(label, "pdf");
     let meta = crate::metadata::pdf_metadata(&doc);
     if !meta.is_empty() {
         report.metadata = Some(meta);

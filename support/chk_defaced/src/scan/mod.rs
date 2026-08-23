@@ -32,6 +32,18 @@ pub fn scan_path(path: &Path, registry: Option<&FontRegistry>) -> Result<Report>
     Ok(report)
 }
 
+/// Scan an already-loaded PDF, for callers that share this crate's `lopdf` version and have
+/// already parsed the file — the same checks as [`scan_path`], without the second parse.
+pub fn scan_document(
+    doc: &lopdf::Document,
+    label: &str,
+    registry: Option<&FontRegistry>,
+) -> Result<Report> {
+    let mut report = pdf::scan_doc(doc, label, registry)?;
+    report.finalize();
+    Ok(report)
+}
+
 /// Deterministic scan, then **escalate to specimen-OCR** for the residual case the outline
 /// cross-reference cannot decide: a custom font with no honest anchor. The escalation runs only when the
 /// deterministic pass found **no** semantic-replacement finding (so it never duplicates an already-caught

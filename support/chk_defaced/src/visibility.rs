@@ -119,7 +119,7 @@ fn push_printable(bytes: &[u8], out: &mut String) {
 /// (the array form of `TJ` interleaves kerning numbers between strings — those are ignored).
 fn shown_text(operands: &[Object], font: Option<&FontDecode>) -> String {
     let mut s = String::new();
-    let mut emit = |bytes: &[u8], s: &mut String| match font {
+    let emit = |bytes: &[u8], s: &mut String| match font {
         Some(f) => f.decode(bytes, s),
         None => push_printable(bytes, s),
     };
@@ -559,7 +559,10 @@ fn media_box(doc: &Document, page_id: lopdf::ObjectId) -> [f64; 4] {
 pub fn pdf_visibility_scan(doc: &Document) -> Vec<Finding> {
     let mut t = Tallies::default();
     for (page_no, (_num, page_id)) in doc.get_pages().into_iter().enumerate() {
-        if let Ok(content) = doc.get_page_content(page_id) {
+        // lopdf 0.44: get_page_content è infallibile (Vec<u8>, vuoto se la
+        // pagina non ha content stream) — prima restituiva Result.
+        let content = doc.get_page_content(page_id);
+        if !content.is_empty() {
             let media = media_box(doc, page_id);
             let fonts = page_font_decoders(doc, page_id);
             scan_page(&content, page_no + 1, media, &fonts, &mut t);
