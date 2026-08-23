@@ -29,10 +29,36 @@ pub fn native_dir() -> PathBuf {
     PathBuf::from("native").join(arch)
 }
 
+/// Where ONNX Runtime lives for this platform.
+///
+/// ort opens it by `ORT_DYLIB_PATH`, and pointing that at the wrong
+/// architecture fails with a bad-format error that says nothing useful — so
+/// the path is derived from the same place pdfium's is, and never typed twice.
+pub fn onnxruntime_path() -> PathBuf {
+    let name = if cfg!(target_os = "windows") {
+        "onnxruntime.dll"
+    } else if cfg!(target_os = "macos") {
+        "libonnxruntime.dylib"
+    } else {
+        "libonnxruntime.so"
+    };
+    native_dir().join(name)
+}
+
 /// Bind pdfium-render to `native/<arch>/pdfium.dll`.
 pub fn bind_pdfium() -> Result<Pdfium, PdfiumError> {
     let library = Pdfium::pdfium_platform_library_name_at_path(&native_dir());
     Ok(Pdfium::new(Pdfium::bind_to_library(library)?))
+}
+
+/// Render a page to a raster at the given resolution.
+///
+/// The scale is `dpi / 72` because a PDF point *is* 1/72 inch, so the two
+/// resolutions never have to be reconciled anywhere else: whoever renders also
+/// knows how to map a pixel back to a point.
+pub fn render_page(page: &PdfPage, dpi: f32) -> Result<image::RgbImage, PdfiumError> {
+    let config = PdfRenderConfig::new().scale_page_by_factor(dpi / 72.0);
+    Ok(page.render_with_config(&config)?.as_image().into_rgb8())
 }
 
 /// The lines of every page of a document, in pdfium's order.

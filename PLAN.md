@@ -136,6 +136,35 @@ e `src/native/outline.rs`. 39 test verdi. Verifiche sul corpus:
   all'output MD e riferimento `![...]()` posizionale.
 
 ### Fase 3 — Markdown dal ramo nativo  (rif: pdf-inspector `markdown/`, `layout.rs`)
+
+**Layout e ordine di lettura: FATTO (2026-08-23)** — `src/layout.rs` (feature
+`layout`), `src/region.rs`, `src/assemble.rs`. 49 test verdi, zero warning con
+e senza feature.
+- PP-DocLayoutV3 gira sul fork `paddle-ocr-rs` come path-dep, ort in
+  **load-dynamic**: la pagina si rasterizza a **150 DPI solo per il layout**
+  (il modello ridimensiona comunque a 800 px, oltre si paga due volte).
+  `ORT_DYLIB_PATH` si autoimposta da `native/<arch>/` — ⚠ questa macchina è
+  **ARM64**, quindi la runtime giusta è `native/aarch64/onnxruntime.dll`;
+  puntare a quella x86_64 dà un errore 193 che non spiega nulla.
+- Le 25 classi del modello si riducono a 10 `RegionKind` utili al Markdown;
+  `region.rs` è indipendente dal modello, così l'assemblaggio funziona anche
+  senza ONNX.
+- `assemble.rs`: righe→regioni per copertura d'area (≥ 50%), **orphan
+  recovery** (le righe fuori regione si clusterizzano su frazioni dell'altezza
+  mediana e vengono **reinserite accanto al vicino**, non appese in fondo),
+  ordinamento dal reading order del modello con XY-Cut (corridoio più largo)
+  come fallback. Invariante "riordina, non filtra" verificata da assert.
+- ⚠ bug trovato e corretto durante la verifica: una regione che non rivendica
+  righe non produce blocco, quindi l'ordine letto per posizione finiva sul
+  blocco sbagliato. L'ordine ora viaggia dentro il blocco (test di regressione).
+
+**Verifica su documenti reali**: `italia grafica` p.20 (rivista a 3 colonne)
+legge titolo → colonna 1 completa → colonna 2 → colonna 3, senza
+interlacciare; `OJ_L_202402853` p.5 riconosce header/footer come `furniture`,
+le note come `aside`, e segue i paragrafi numerati.
+
+Resta da fare in Fase 3: emissione Markdown, heading (bookmark + tipografia),
+tabelle dalle rules, liste/codice/caption, postprocess.
 - **Struttura e ordine di lettura da PP-DocLayoutV3** (indicazione dell'autore,
   2026-08-23): sui PDF nativi si applica il modello di layout per ottenere i
   raggruppamenti di contenuto e l'**ordine semantico di lettura**, invece di

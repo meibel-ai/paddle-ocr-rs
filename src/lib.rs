@@ -6,7 +6,12 @@
 //! (Tesseract as the fallback engine), and the two are fused per page before
 //! the Markdown is assembled.
 
+pub mod assemble;
 pub mod detect;
 pub mod geometry;
+#[cfg(feature = "layout")]
+pub mod layout;
+
 pub mod integrity;
 pub mod native;
+pub mod region;

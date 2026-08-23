@@ -9,9 +9,11 @@ license = "Apache-2.0"
 # non devono finire in un eventuale `cargo package`.
 exclude = ["old_project/", "models/", "native/", "support/", "test/", "tools/", "benchmark/"]
 
-# Questo repo ospita anche i progetti storici in old_project/ (ognuno col suo
-# workspace): la tabella vuota chiude qui il workspace del nuovo crate.
+# Questo repo ospita anche i progetti storici in old_project/ e i crate
+# vendorizzati in support/. Sono dipendenze path, non membri: escluderli
+# lascia a ciascuno il proprio profilo di build invece di ignorarlo.
 [workspace]
+exclude = ["old_project", "support"]
 
 [dependencies]
 anyhow = "1"
@@ -30,6 +32,18 @@ image = { version = "0.25", default-features = false, features = ["jpeg", "png"]
 # default-features = false: niente CLI (clap), niente HTML (scraper), niente
 # webview/wasm — resta la sola scansione deterministica.
 chk_defaced = { path = "support/chk_defaced", default-features = false }
+# Analisi di layout PP-DocLayoutV3 (Fase 3, e più avanti il ramo OCR): fork
+# dell'autore. `example-dynamic` = ort in load-dynamic, così ONNX Runtime si
+# carica a runtime da native/<arch>/onnxruntime.dll via ORT_DYLIB_PATH.
+paddle-ocr-rs = { path = "old_project/paddle-ocr-rs", optional = true, features = [
+    "example-dynamic",
+] }
+
+[features]
+# Default leggero: solo estrazione nativa, niente ONNX Runtime.
+default = []
+# Struttura e ordine di lettura dal modello di layout.
+layout = ["dep:paddle-ocr-rs"]
 
 [[bin]]
 name = "pdf2md"

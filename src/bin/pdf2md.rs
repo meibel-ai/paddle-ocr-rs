@@ -1,8 +1,8 @@
-//! `pdf2md` — Phase 1 CLI: classify a document page by page and say which
-//! pages need OCR, and why.
+//! `pdf2md` — the pipeline's command line, so far a window onto each stage:
+//! how pages are classified and routed, what the native branch reads, what a
+//! page draws besides text, and what the layout model makes of it.
 //!
-//! Markdown comes in Phase 3; what this prints is the routing decision the
-//! rest of the pipeline will act on.
+//! Markdown itself comes with the rest of Phase 3.
 
 use std::path::Path;
 use std::process::ExitCode;
@@ -26,6 +26,14 @@ fn main() -> ExitCode {
     while let Some(flag) = args.next() {
         match flag.as_str() {
             "--structure" => structure = true,
+            #[cfg(feature = "layout")]
+            "--layout" => {
+                let Some(value) = args.next().and_then(|v| v.parse::<usize>().ok()) else {
+                    eprintln!("{USAGE}");
+                    return ExitCode::FAILURE;
+                };
+                return print_layout(Path::new(&input), value);
+            }
             "--sample" | "--lines" => {
                 let Some(value) = args.next().and_then(|v| v.parse::<usize>().ok()) else {
                     eprintln!("{USAGE}");
@@ -78,6 +86,92 @@ fn main() -> ExitCode {
     }
 
     print_pages(&report);
+    ExitCode::SUCCESS
+}
+
+/// The regions the layout model finds on a page, in the page's own points.
+#[cfg(feature = "layout")]
+fn print_layout(path: &Path, number: usize) -> ExitCode {
+    use pdf_extractor_2_md::layout::{self, LayoutModel, LAYOUT_DPI};
+    use pdf_extractor_2_md::{assemble, region::Region};
+
+    // ort opens ONNX Runtime by this variable. Defaulting it to the runtime
+    // that matches this build saves the caller from pointing it at the wrong
+    // architecture, which fails with an error that explains nothing.
+    if std::env::var_os("ORT_DYLIB_PATH").is_none() {
+        std::env::set_var("ORT_DYLIB_PATH", native::onnxruntime_path());
+    }
+    let model_path = std::env::var("PDF2MD_LAYOUT_MODEL")
+        .unwrap_or_else(|_| "models/paddleocr/layout/PP-DocLayoutV3.onnx".to_string());
+    let mut model = match LayoutModel::open(&model_path) {
+        Ok(model) => model,
+        Err(error) => {
+            eprintln!("cannot load {model_path}: {error}");
+            eprintln!("ORT_DYLIB_PATH must point at native/<arch>/onnxruntime.dll");
+            return ExitCode::FAILURE;
+        }
+    };
+    let Ok(pdfium) = native::bind_pdfium() else {
+        eprintln!("pdfium unavailable from {}", native::native_dir().display());
+        return ExitCode::FAILURE;
+    };
+    let document = match pdfium.load_pdf_from_file(path, None) {
+        Ok(document) => document,
+        Err(error) => {
+            eprintln!("cannot open {}: {error}", path.display());
+            return ExitCode::FAILURE;
+        }
+    };
+    let Some(page) = document.pages().iter().nth(number.saturating_sub(1)) else {
+        eprintln!("page {number} is out of range");
+        return ExitCode::FAILURE;
+    };
+
+    let raster = match native::render_page(&page, LAYOUT_DPI) {
+        Ok(raster) => raster,
+        Err(error) => {
+            eprintln!("cannot render page {number}: {error}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let regions = match model.regions(&raster) {
+        Ok(regions) => regions,
+        Err(error) => {
+            eprintln!("layout failed on page {number}: {error}");
+            return ExitCode::FAILURE;
+        }
+    };
+    // The model works in raster pixels; everything downstream works in the
+    // page's own points, so the regions are brought back here and once only.
+    let height = page.height().value;
+    let scale = LAYOUT_DPI / 72.0;
+    let regions: Vec<_> = regions
+        .into_iter()
+        .map(|region| Region { bbox: layout::to_points(region.bbox, scale, height), ..region })
+        .collect();
+
+    let lines = native::text::page_lines(&page).unwrap_or_default();
+    println!(
+        "page {number}: {} regions, {} lines ({}x{} px)",
+        regions.len(),
+        lines.len(),
+        raster.width(),
+        raster.height(),
+    );
+    for block in assemble::assemble(lines, &regions) {
+        let text = block.text().replace('\n', " ");
+        let shown: String = text.chars().take(96).collect();
+        println!(
+            "  {:<10}{} [{:>6.1},{:>6.1} {:>6.1}x{:>6.1}] {shown}{}",
+            block.kind.as_str(),
+            if block.recovered { "*" } else { " " },
+            block.bbox.left,
+            block.bbox.bottom,
+            block.bbox.width(),
+            block.bbox.height(),
+            if text.chars().count() > 96 { "…" } else { "" },
+        );
+    }
     ExitCode::SUCCESS
 }
 
