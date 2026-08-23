@@ -107,8 +107,23 @@ sui documenti reali e tutte con test di regressione:
 Coerenza verificata: colonne mai interlacciate (`italia grafica`), celle mai
 fuse (fixture tabellare), gap ≥ 3 em separa colonna e cella.
 
-Restano da fare in Fase 2: page objects (rect/linee per le tabelle), bookmark,
-metadata, annotazioni, export immagini.
+**Page object, outline e immagini: FATTO (2026-08-23)** — `src/native/objects.rs`
+e `src/native/outline.rs`. 39 test verdi. Verifiche sul corpus:
+- **rules** (linee per le tabelle): i path si percorrono *segmento per
+  segmento*, non per bounding box — un produttore può disegnare l'intera
+  griglia come un solo path, e il suo box sarebbe la tabella, non le linee.
+  Sulla fixture tabellare: ~98 linee orizzontali + ~20 verticali per pagina,
+  cioè righe e colonne reali. Filtri: spessore ≤ 3 pt (oltre è un pannello),
+  lunghezza ≥ 4 pt, tolleranza d'asse 0,6 pt;
+- **bookmark**: titolo, livello di annidamento e pagina di destinazione
+  (verificato su ROPOLL: 41 voci, gerarchia e pagine corrette). Solo 4
+  documenti su 16 ne hanno → la tipografia resta il percorso principale;
+- **metadata** `/Info` e **annotazioni**: tenute solo quelle con testo o URI —
+  i link interni (GOTO) sono scartati, diventeranno àncore in Fase 3.
+  Conteggi verificati contro pdfium grezzo (circolare_garante 2 URI = 2
+  annotazioni, Tritium 1768 URI ≈ 147/pagina);
+- **immagini**: piazzamento in punti + decodifica (`image_at`), verificata su
+  documenti reali (circolare_garante 1199×126 px in 527×56 pt).
 - `FPDFText_*`: char, bbox, font (nome/peso/size), render mode, angolo.
 - Raggruppamento char→parole→righe: soglia spazio dalla larghezza reale dello
   spazio del font; join letterspaced con soglia di **Otsu**

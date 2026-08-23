@@ -11,7 +11,8 @@ use pdf_extractor_2_md::detect::{self, DocumentReport, ScanStrategy};
 use pdf_extractor_2_md::integrity::{self, ChkDefaced, IntegrityCheck};
 use pdf_extractor_2_md::native;
 
-const USAGE: &str = "usage: pdf2md <input.pdf> [--sample N] [--lines PAGE]  (--lines 0 = every page)";
+const USAGE: &str = "usage: pdf2md <input.pdf> [--sample N] [--lines PAGE] [--structure]\n\
+                     (--lines 0 = every page; --structure = outline, metadata, rules, images)";
 
 fn main() -> ExitCode {
     let mut args = std::env::args().skip(1);
@@ -21,11 +22,20 @@ fn main() -> ExitCode {
     };
     let mut strategy = ScanStrategy::Full;
     let mut lines_of_page = None;
+    let mut structure = false;
     while let Some(flag) = args.next() {
-        let value = args.next().and_then(|v| v.parse::<usize>().ok());
-        match (flag.as_str(), value) {
-            ("--sample", Some(n)) => strategy = ScanStrategy::Sample(n),
-            ("--lines", Some(n)) => lines_of_page = Some(n),
+        match flag.as_str() {
+            "--structure" => structure = true,
+            "--sample" | "--lines" => {
+                let Some(value) = args.next().and_then(|v| v.parse::<usize>().ok()) else {
+                    eprintln!("{USAGE}");
+                    return ExitCode::FAILURE;
+                };
+                match flag.as_str() {
+                    "--sample" => strategy = ScanStrategy::Sample(value),
+                    _ => lines_of_page = Some(value),
+                }
+            }
             _ => {
                 eprintln!("{USAGE}");
                 return ExitCode::FAILURE;
@@ -34,6 +44,9 @@ fn main() -> ExitCode {
     }
 
     let path = Path::new(&input);
+    if structure {
+        return print_structure(path);
+    }
     if let Some(number) = lines_of_page {
         return print_lines(path, number);
     }
@@ -65,6 +78,56 @@ fn main() -> ExitCode {
     }
 
     print_pages(&report);
+    ExitCode::SUCCESS
+}
+
+/// What the document says about itself, and what each page draws besides text.
+fn print_structure(path: &Path) -> ExitCode {
+    let Ok(pdfium) = native::bind_pdfium() else {
+        eprintln!("pdfium unavailable from {}", native::native_dir().display());
+        return ExitCode::FAILURE;
+    };
+    let document = match pdfium.load_pdf_from_file(path, None) {
+        Ok(document) => document,
+        Err(error) => {
+            eprintln!("cannot open {}: {error}", path.display());
+            return ExitCode::FAILURE;
+        }
+    };
+
+    let metadata = native::outline::metadata(&document);
+    println!("metadata: {} field(s)", metadata.len());
+    for (name, value) in &metadata {
+        println!("  {name}: {value}");
+    }
+
+    let bookmarks = native::outline::bookmarks(&document);
+    println!("outline: {} bookmark(s)", bookmarks.len());
+    for bookmark in bookmarks.iter().take(20) {
+        let page = bookmark.page.map_or_else(|| "?".to_string(), |page| page.to_string());
+        println!("  {}p.{page:<5} {}", "  ".repeat(bookmark.level), bookmark.title);
+    }
+    if bookmarks.len() > 20 {
+        println!("  … {} more", bookmarks.len() - 20);
+    }
+
+    for (index, page) in document.pages().iter().enumerate() {
+        let rules = native::objects::rules(&page);
+        let images = native::objects::images(&page);
+        let annotations = native::objects::annotations(&page);
+        if rules.is_empty() && images.is_empty() && annotations.is_empty() {
+            continue;
+        }
+        let horizontal = rules.iter().filter(|rule| rule.horizontal).count();
+        println!(
+            "  page {:>4}: {:>4} rules ({horizontal} h / {} v), {} image(s), {} annotation(s)",
+            index + 1,
+            rules.len(),
+            rules.len() - horizontal,
+            images.len(),
+            annotations.len(),
+        );
+    }
     ExitCode::SUCCESS
 }
 

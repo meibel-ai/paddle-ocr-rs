@@ -21,6 +21,10 @@ anyhow = "1"
 lopdf = "0.44"
 # Ramo nativo (Fase 2+): binding dinamico a native/<arch>/pdfium.dll.
 pdfium-render = "0.8"
+# Immagini estratte dalle pagine (Fase 2) e, più avanti, i raster del ramo OCR.
+# La versione deve restare quella di pdfium-render (feature `image_025`),
+# altrimenti i DynamicImage che restituisce non sono i nostri.
+image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
 # Integrità documento (font defacing + testo nascosto/prompt injection),
 # crate dell'autore. Path-dep sul vendored: condivide il NOSTRO lopdf 0.44.
 # default-features = false: niente CLI (clap), niente HTML (scraper), niente

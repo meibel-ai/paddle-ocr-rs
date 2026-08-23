@@ -3,11 +3,15 @@
 //! Text, page objects, bookmarks, metadata, annotations and images all come
 //! from here (see `PLAN.md`, Phase 2).
 
+pub mod objects;
+pub mod outline;
 pub mod text;
 
 use pdfium_render::prelude::*;
 use std::path::{Path, PathBuf};
 
+pub use objects::{Annotation, ImagePlacement, Rule};
+pub use outline::Bookmark;
 pub use text::{Line, Style, Word};
 
 /// Directory holding the runtime libraries for the current architecture.
