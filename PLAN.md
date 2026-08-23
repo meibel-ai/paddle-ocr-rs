@@ -337,6 +337,17 @@ size = altezza box — così colonne, montaggio e Markdown sono **condivisi**, n
 duplicati. CLI: `--ocr-png <img>` per una pagina, `--ocr-batch <lista>` per il
 benchmark (l'init del motore costa secondi e si paga una volta sola).
 
+**Benchmark motori (2026-08-24)** — 160 immagini (40 pagine × 4 livelli),
+v. RISULTATI.md §4 per le tabelle. Sintesi: **v6-small è il candidato
+default** (L0 97,7%, L1 95,6%, L2 91,5% di recall a 2,6-4,3 s/pagina);
+⚠ v6-medium perde lettere dentro le parole sui crop inclinati/JPEG (L1 71,8%)
+— da indagare prima dell'uso (il canale Python con crop prospettico non
+mostra il sintomo); Tesseract 96,0/87,6 su L1/L2 ma 8-21 s/pagina e tempo
+crescente col rumore; L3 (fax+pieghe) inservibile per tutti senza
+deskew+denoise → futuro passo ⓪ della pipeline. La regola «CPU pura →
+Tesseract» della policy va rivista: v6-small su CPU batte Tesseract in
+qualità e velocità insieme.
+
 **Verifica inclinazione del benchmark (2026-08-23)**: stimato l'angolo di skew
 su un campione (proiezione orizzontale a varianza massima): L0 = 0,00° su
 tutte, L1/L2 tra 0,3° e 0,95° (il range progettato), L3 inclinata dove
