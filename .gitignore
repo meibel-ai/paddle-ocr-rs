@@ -2,9 +2,24 @@ target
 Cargo.lock
 test
 # models/ resta fuori dal repo (~1 GB), tranne le ground truth piccole e stabili
-# per il FontRegistry di chk_defaced (v. README_CHK_DOCUMENT.md §4-5)
+# per il FontRegistry di chk_defaced (v. README_CHK_DOCUMENT.md §4-5) e la nota
+# di provenienza/licenze del materiale lessicale.
 models/*
 !models/fonts/
 !models/cmaps/
+!models/README-lessico.md
 test_output
-benchmark
+# Il corpus del benchmark, non gli strumenti che lo generano (tools/benchmark/):
+# senza la barra iniziale questo pattern escluderebbe anche quelli.
+/benchmark/
+# Materiale di riferimento in old_project/: cloni di altri progetti, due con un
+# `.git` proprio, oltre 500 MB in tutto. Restano in locale; la mappa di cosa
+# sono e a cosa servono è in STRUTTURA-OCR.md e CLAUDE.md. Fa eccezione il fork
+# paddle-ocr-rs, che è codice dell'autore ed era già versionato qui.
+old_project/*
+!old_project/paddle-ocr-rs/
+# DLL runtime per architettura (58 MB): come i modelli, stanno fuori dal repo.
+native/
+# Sottoprodotti degli strumenti di benchmark.
+augraphy_cache/
+benchmark-run.log

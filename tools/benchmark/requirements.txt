@@ -1,0 +1,5 @@
+# Strumenti del benchmark OCR (Fase 6 di PLAN.md) — solo sviluppo, non runtime.
+pypdfium2>=4.30        # rasterizzazione + ground truth (stesso motore del progetto)
+augraphy==8.2.6        # degradazione documenti (MIT): fax, fotocopia, pieghe, rumore
+opencv-python>=4.9     # dipendenza di augraphy, usata anche per la rotazione fine
+numpy
