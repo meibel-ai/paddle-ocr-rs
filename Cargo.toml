@@ -40,11 +40,17 @@ paddle-ocr-rs = { path = "old_project/paddle-ocr-rs", optional = true, features 
     "example-dynamic",
 ] }
 
+# Ramo OCR (Fase 4): Tesseract come motore, via il binding dell'autore.
+# `build-tesseract` compila Tesseract+Leptonica staticamente: niente DLL.
+tesseract5-rs = { path = "old_project/df-Tesseract/tesseract5-rs", optional = true }
+
 [features]
 # Default leggero: solo estrazione nativa, niente ONNX Runtime.
 default = []
 # Struttura e ordine di lettura dal modello di layout.
 layout = ["dep:paddle-ocr-rs"]
+# Ramo OCR con motore Tesseract.
+tesseract = ["dep:tesseract5-rs"]
 
 [[bin]]
 name = "pdf2md"

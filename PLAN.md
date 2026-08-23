@@ -328,6 +328,19 @@ tabelle dalle rules, liste e codice, postprocess (numeri di pagina, URL).
 - Test snapshot con fixture per patologia (riusare quelle di pdf-inspector).
 
 ### Fase 4 — Ramo OCR con fallback Tesseract  (rif: paddle-ocr-rs, df-ocr-switcher, edito-ocr-v6)
+
+**Motore Tesseract: FATTO (2026-08-23)** — `src/ocr.rs` (feature `tesseract`,
+path-dep su `tesseract5-rs`, build statica di Tesseract 5.5 + Leptonica:
+niente DLL). `TesseractEngine::read_page` restituisce le stesse `Line` del
+ramo nativo — bbox ribaltati in spazio pagina, confidenza minima 30 per parola,
+size = altezza box — così colonne, montaggio e Markdown sono **condivisi**, non
+duplicati. CLI: `--ocr-png <img>` per una pagina, `--ocr-batch <lista>` per il
+benchmark (l'init del motore costa secondi e si paga una volta sola).
+
+**Verifica inclinazione del benchmark (2026-08-23)**: stimato l'angolo di skew
+su un campione (proiezione orizzontale a varianza massima): L0 = 0,00° su
+tutte, L1/L2 tra 0,3° e 0,95° (il range progettato), L3 inclinata dove
+l'halftone del fax non maschera la stima. Le pagine deteriorate SONO inclinate.
 - Raster con pdfium: DPI per pagina dagli XObject, clamp [150, 200], pagine
   vettoriali a 200 (rif: `pipeline.py:497-522`).
 - Pipeline Paddle dal fork: orientamento (idempotente a 0°) → PP-DocLayoutV3 →

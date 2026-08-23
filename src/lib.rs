@@ -16,5 +16,8 @@ pub mod layout;
 pub mod integrity;
 pub mod markdown;
 pub mod native;
+
+#[cfg(feature = "tesseract")]
+pub mod ocr;
 pub mod region;
 pub mod structure;

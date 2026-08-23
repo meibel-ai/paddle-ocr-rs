@@ -28,6 +28,14 @@ enum Task {
     Structure,
     #[cfg(feature = "layout")]
     Layout(usize),
+    #[cfg(feature = "tesseract")]
+    OcrImage(PathBuf),
+    /// A file listing one PNG per line: each is read with a single engine —
+    /// initialisation costs seconds and must not be paid per page — and the
+    /// Markdown lands beside it as `<name>.tess.md`, with a timing line on
+    /// stdout per page.
+    #[cfg(feature = "tesseract")]
+    OcrBatch(PathBuf),
 }
 
 fn main() -> ExitCode {
@@ -85,6 +93,10 @@ fn main() -> ExitCode {
                         Ok(n) => task = Task::Layout(n),
                         Err(_) => return usage_error(),
                     },
+                    #[cfg(feature = "tesseract")]
+                    ("--ocr-png", image) => task = Task::OcrImage(PathBuf::from(image)),
+                    #[cfg(feature = "tesseract")]
+                    ("--ocr-batch", list) => task = Task::OcrBatch(PathBuf::from(list)),
                     _ => return usage_error(),
                 }
             }
@@ -98,7 +110,93 @@ fn main() -> ExitCode {
         Task::Structure => print_structure(&path),
         #[cfg(feature = "layout")]
         Task::Layout(page) => print_layout(&path, page),
+        #[cfg(feature = "tesseract")]
+        Task::OcrImage(image) => ocr_image(&image),
+        #[cfg(feature = "tesseract")]
+        Task::OcrBatch(list) => ocr_batch(&list),
     }
+}
+
+#[cfg(feature = "tesseract")]
+fn ocr_batch(list: &Path) -> ExitCode {
+    use pdf_extractor_2_md::ocr::TesseractEngine;
+    use pdf_extractor_2_md::structure::Typography;
+    use std::time::Instant;
+
+    let Ok(listing) = std::fs::read_to_string(list) else {
+        eprintln!("cannot read {}", list.display());
+        return ExitCode::FAILURE;
+    };
+    let engine = match TesseractEngine::new("ita+eng", PathBuf::from("models/tesseract/tessdata")) {
+        Ok(engine) => engine,
+        Err(error) => {
+            eprintln!("tesseract unavailable: {error:?}");
+            return ExitCode::FAILURE;
+        }
+    };
+    for entry in listing.lines().map(str::trim).filter(|entry| !entry.is_empty()) {
+        let started = Instant::now();
+        let Ok(page) = image::open(entry).map(|image| image.into_rgb8()) else {
+            println!("{entry}	ERROR open");
+            continue;
+        };
+        let Ok(lines) = engine.read_page(&page) else {
+            println!("{entry}	ERROR ocr");
+            continue;
+        };
+        let typography = Typography::of(std::slice::from_ref(&lines), &[]);
+        let mut writer =
+            Writer::new(Options { images: Images::Skip, keep_furniture: true }, typography);
+        let blocks = assemble::assemble(lines, &[]);
+        let markdown = writer.page(&blocks, None);
+        let out = format!("{entry}.tess.md");
+        if std::fs::write(&out, markdown).is_err() {
+            println!("{entry}	ERROR write");
+            continue;
+        }
+        println!("{entry}	{:.2}", started.elapsed().as_secs_f64());
+    }
+    ExitCode::SUCCESS
+}
+
+/// The OCR pipeline on one raster page: Tesseract reads it, then the same
+/// column detection, assembly and Markdown writer as the native branch.
+/// `<input>` is ignored in this mode; the image is the input.
+#[cfg(feature = "tesseract")]
+fn ocr_image(image_path: &Path) -> ExitCode {
+    use pdf_extractor_2_md::ocr::TesseractEngine;
+    use pdf_extractor_2_md::structure::Typography;
+
+    let tessdata = PathBuf::from("models/tesseract/tessdata");
+    let engine = match TesseractEngine::new("ita+eng", tessdata) {
+        Ok(engine) => engine,
+        Err(error) => {
+            eprintln!("tesseract unavailable: {error:?}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let page = match image::open(image_path) {
+        Ok(image) => image.into_rgb8(),
+        Err(error) => {
+            eprintln!("cannot open {}: {error}", image_path.display());
+            return ExitCode::FAILURE;
+        }
+    };
+    let lines = match engine.read_page(&page) {
+        Ok(lines) => lines,
+        Err(error) => {
+            eprintln!("ocr failed on {}: {error:?}", image_path.display());
+            return ExitCode::FAILURE;
+        }
+    };
+    let typography = Typography::of(std::slice::from_ref(&lines), &[]);
+    let mut writer = Writer::new(
+        Options { images: Images::Skip, keep_furniture: true },
+        typography,
+    );
+    let blocks = assemble::assemble(lines, &[]);
+    print!("{}", writer.page(&blocks, None));
+    ExitCode::SUCCESS
 }
 
 fn usage_error() -> ExitCode {
