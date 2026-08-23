@@ -99,8 +99,24 @@ stessa guardia in `glyphmatch::legitimately_identical`.
   all'output MD e riferimento `![...]()` posizionale.
 
 ### Fase 3 — Markdown dal ramo nativo  (rif: pdf-inspector `markdown/`, `layout.rs`)
-- Colonne: istogramma di proiezione + XY-cut fallback + Y-band; spanning lines
-  pre-mascherate; clamp difensivo delle coordinate malformate.
+- **Struttura e ordine di lettura da PP-DocLayoutV3** (indicazione dell'autore,
+  2026-08-23): sui PDF nativi si applica il modello di layout per ottenere i
+  raggruppamenti di contenuto e l'**ordine semantico di lettura**, invece di
+  affidarsi alle sole euristiche geometriche. Implica rasterizzare la pagina a
+  bassa risoluzione (il layout non ha bisogno di 200 DPI) *solo* per il
+  modello, e poi associare i box di testo pdfium alle regioni. Riuso diretto
+  dal fork: `layout.rs` (PP-DocLayoutV3, 25 classi, reading order appreso come
+  7ª colonna dell'output), `xy_cut_order`, `pipeline::layout::associate_lines`,
+  più l'orphan recovery di edito-ocr-v6 (`order.py:95`) perché il layout dà
+  struttura ma non decide cosa esiste. Ordine di preferenza della sorgente:
+  structure tree (PDF taggati) > reading order del modello (se copre tutte le
+  unità) > XY-Cut geometrico. La fonte scelta va nei log.
+- **Verifica obbligatoria su multicolonna e tabelle**: colonne mai
+  interlacciate, celle mai fuse. Da provare su documenti reali del corpus
+  (`italia grafica` per il layout a rivista, `OJ_L_…` e `ag 434_…` per il
+  legale italiano a due colonne, `edpb_…` per l'inglese).
+- Colonne (fallback senza modello): istogramma di proiezione + XY-cut + Y-band;
+  spanning lines pre-mascherate; clamp difensivo delle coordinate malformate.
 - Heading: **bookmark come fonte primaria** quando coprono il documento; poi
   tier dimensioni font (≥1.2× body, correzione base-size dalle note), fallback
   bold ≥1.05×, classificatore document-sequence.
@@ -208,7 +224,12 @@ parametro del chiamante (→1280 ok), input `RgbImage`, confidenze per parola
   (lezione di `probe.py:126-132`), non a stringa concatenata. Limite noto da
   dichiarare nei risultati: il rumore sintetico non copre i difetti di
   scansione fisica (piega del foglio, timbri sovrapposti, mezzitoni della
-  carta) — integrare più avanti con qualche scansione vera. [Fase 6]
+  carta) — integrare più avanti con qualche scansione vera.
+  **Generato il 2026-08-23** con `tools/benchmark/make_benchmark.py` in
+  `benchmark/out/` (gitignored): 16 documenti, 659 pagine, 2.636 immagini
+  L0-L3, 118.337 parole di verità, 8,6 GB. 5 pagine hanno verità vuota (sono
+  pagine scansionate dentro documenti nativi): da escludere dallo scoring
+  filtrando su `parole_verita`. [Fase 6]
 
 ## Punti aperti
 - ~~`QualityOracle` (garbage detection): implementazione dell'autore~~

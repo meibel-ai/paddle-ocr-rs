@@ -30,6 +30,17 @@ profonda dei PDF nativi digitali.
 - **`paddle-ocr-rs` è codice dell'autore**: path-dep su
   `old_project\paddle-ocr-rs`, aggiornabile da GitHub
   (`dariofinardi/paddle-pipeline-ocr-rs`, che è l'origin di questo repo).
+- **PP-DocLayoutV3 anche sul ramo nativo** (indicazione dell'autore): la
+  struttura e l'**ordine semantico di lettura** dei PDF nativi si ricavano dal
+  modello di layout, non dalle sole euristiche geometriche. La pagina si
+  rasterizza a bassa risoluzione solo per il layout, poi i box di testo di
+  pdfium si associano alle regioni rilevate (riuso: `layout`, `xy_cut_order` e
+  `pipeline::layout::associate_lines` del fork `paddle-ocr-rs`). Le euristiche
+  di colonna restano il fallback quando il modello non è disponibile.
+- **Multicolonna e tabelle: l'estrazione deve restare coerente** (requisito
+  esplicito dell'autore), su entrambi i rami. Le colonne non vanno mai
+  interlacciate, le celle non vanno mai fuse: ogni modifica va verificata su
+  documenti reali multicolonna e con tabelle, non solo con unit test.
 - **Fusione per pagina** tra testo nativo e OCR (stile
   `pdf-inspector/src/vision/fusion.rs`), con provenienza tracciata.
 - **Integrità documento: `chk_defaced` 0.2.4** (crate dell'autore, AGPL-3.0,
