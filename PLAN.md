@@ -236,6 +236,30 @@ gutter è più stretto di 3 em. Una regola sul cambio di corpo è stata provata 
 **rimossa**: cambiava cinque documenti senza spostare alcuna metrica e senza
 risolvere il caso che l'aveva motivata.
 
+**Confronto con pdf-inspector (2026-08-23)** — il riferimento di terze parti
+compilato *senza modifiche* (default, niente OCR) e misurato sugli stessi 16
+PDF nativi, stessa verità e stesse metriche:
+
+| | recall | precisione | ordine | heading | tempo |
+|---|---|---|---|---|---|
+| pdf-inspector | 93,9% | 96,7% | 93,5% | 1.523 | 7,3 s |
+| nostro geometrico | **98,3%** | 98,5% | 94,9% | 768 | **4,5 s** |
+| nostro + LayoutV3 | 97,2% | **98,9%** | **97,5%** | 1.067 | 590 s |
+
+Due letture che contano più della media:
+- **pdf-inspector batte il nostro percorso geometrico sull'ordine di tutti i
+  multicolonna** (AI CNEL 94,7% contro 86,0%, italia grafica 92,5% contro
+  85,5%, QUALITY 94,8% contro 86,6%, Invisible Prompts 95,1% contro 89,9%),
+  perché ha una vera **rilevazione di colonne** — istogramma di proiezione,
+  XY-cut, Y-band — che a noi manca: il nostro geometrico ordina solo cluster
+  di orfani. È il pezzo concreto da portare, ed è ciò che renderebbe il
+  percorso veloce competitivo sul multicolonna senza il modello.
+- il suo caso peggiore (ROPOLL, recall 72,5%) è un **falso positivo di
+  tabella**: un paper a due colonne finisce dentro una tabella pipe e il testo
+  esce mescolato ("The LLM Jury, a (Ro bust P anel o f that match on the
+  parametric rate"). Da tenere presente quando implementeremo le tabelle: i
+  veti anti-falso-positivo del suo `markdown/mod.rs` non bastano sui paper.
+
 Resta da fare in Fase 3: heading multilivello (bookmark + tier tipografici),
 tabelle dalle rules, liste e codice, postprocess (numeri di pagina, URL).
 - **Struttura e ordine di lettura da PP-DocLayoutV3** (indicazione dell'autore,
