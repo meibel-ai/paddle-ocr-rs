@@ -90,6 +90,17 @@ non toccare i pixel); niente scarti silenziosi (ogni riga scartata risale nei
 log/risultato); opzioni non implementate → **errore**, mai accettate senza
 effetto.
 
+## Git
+
+- **Il push lo fa l'autore a mano.** Il classificatore di sicurezza di Claude
+  Code blocca `git push` in modalità automatica, quindi i commit si preparano
+  in locale e restano lì: chiudere il lavoro dicendo *quanti* commit sono
+  pronti e su quale branch, senza tentare il push. Comando dell'autore:
+  `git push origin ort-rc13`.
+- Branch di lavoro: `ort-rc13`. Remote: `dariofinardi/paddle-pipeline-ocr-rs`
+  (lo stesso repo del fork paddle-ocr-rs).
+- Messaggi di commit in italiano, come i documenti di progetto.
+
 ## Trappole note
 
 - Le librerie native (ort, pdfium, Tesseract) NON capiscono i path Windows
