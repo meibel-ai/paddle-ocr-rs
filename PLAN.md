@@ -188,10 +188,15 @@ Prestazioni: la pagina si rasterizza **una volta sola**, condivisa tra modello
 di layout e crop delle figure (erano due render a 150 DPI). ~0,8 s/pagina,
 dominati dall'inferenza del layout su CPU.
 
-**Misura sul corpus nativo (2026-08-23)** — Markdown prodotto confrontato a
-multiset di parole con la verità del benchmark (il testo che pdfium estrae
-dallo stesso PDF), `tools/benchmark/score.py`. Recall ≥ 98% su 8 documenti su
-15, ≥ 94% su 13. Le perdite residue **non sono contenuto**:
+**Misura sul corpus nativo (2026-08-23)** — corsa completa su tutti e 16 i
+documenti col binario definitivo: nessun fallimento, 597 s per 659 pagine
+(0,9 s/pagina, dominati dall'inferenza del layout su CPU). Markdown prodotto
+confrontato a multiset di parole con la verità del benchmark (il testo che
+pdfium estrae dallo stesso PDF). **Recall ≥ 99% su 8 documenti, ≥ 94% su 14**;
+precisione ≥ 99% su 10, mai sotto il 96%. `italia grafica` — la rivista a tre
+colonne, il caso più difficile del corpus — sta a 99,7% di recall e 98,8% di
+precisione, il che convalida l'ordine di lettura dal modello di layout da capo
+a fondo. Le perdite residue **non sono contenuto**:
 - **furniture** (testate correnti, watermark, rubriche ripetute), scartata per
   scelta: su `AI CNEL` sono 1.045 parole delle 2.797 mancanti;
 - **sillabazione riparata**: altre 1.361 sono token che la verità contiene
