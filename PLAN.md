@@ -260,6 +260,27 @@ Due letture che contano più della media:
   parametric rate"). Da tenere presente quando implementeremo le tabelle: i
   veti anti-falso-positivo del suo `markdown/mod.rs` non bastano sui paper.
 
+**Rilevazione di colonne (2026-08-23)** — `src/columns.rs`, ispirata a
+`old_project/pdf-inspector/src/extractor/layout.rs` (MIT) e ri-espressa sui
+nostri tipi. Istogramma di proiezione a strisce da 2 pt sulle righe; un gutter
+è una sequenza di strisce che portano al più il **10% della striscia più
+affollata** (non zero: un filetto o un rimando che attraversa il corridoio
+basterebbe a nasconderlo — è la deroga deliberata rispetto alla soglia fissa
+del riferimento); validazione per numero di righe (≥8) ed estensione verticale
+(≥30% del testo), altrimenti la divisione si scarta. Le righe che attraversano
+un gutter non appartengono a nessuna colonna e vengono lette prima.
+
+Integrata in **entrambi i percorsi** tramite il montaggio: gli orfani si
+ordinano per colonna prima che per posizione — su una pagina a due colonne un
+ordinamento puramente verticale alterna le colonne riga per riga e un paragrafo
+non si forma mai — e non si aggregano mai attraverso un gutter.
+
+Effetto sul percorso geometrico: **ordine medio da 93,4% a 95,7%**, con i
+guadagni dove servivano — AI CNEL +10,7, QUALITY OF OCR +10,5, italia grafica
++8,6, Invisible Prompts +5,8. Recall e precisione salgono anch'esse
+(98,3→98,5, 98,5→98,7) e la frammentazione dei heading cala (rivista da 549 a
+324). Costo: 7 s → 11 s sul corpus.
+
 Resta da fare in Fase 3: heading multilivello (bookmark + tier tipografici),
 tabelle dalle rules, liste e codice, postprocess (numeri di pagina, URL).
 - **Struttura e ordine di lettura da PP-DocLayoutV3** (indicazione dell'autore,

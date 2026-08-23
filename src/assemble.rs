@@ -12,6 +12,7 @@
 //!   (`.../pipeline.py:487-491`). Every line that goes in comes out, and
 //!   [`assemble`] states that as an assertion rather than a hope.
 
+use crate::columns::{self, Column};
 use crate::geometry::Rect;
 use crate::native::Line;
 use crate::region::{Region, RegionKind};
@@ -64,8 +65,12 @@ impl Block {
 /// Assign lines to regions and put the result in reading order.
 pub fn assemble(lines: Vec<Line>, regions: &[Region]) -> Vec<Block> {
     let count_in = lines.len();
+    // The page's columns are worked out before anything is grouped: a line
+    // that no region claimed still belongs to a column, and clustering across
+    // a gutter is how a paragraph ends up carrying its neighbour's sentences.
+    let columns = columns::detect(&lines);
     let (mut blocks, orphans) = distribute(lines, regions);
-    blocks.extend(recover(orphans));
+    blocks.extend(recover(orphans, &columns));
 
     let ordered = order_blocks(blocks);
     debug_assert_eq!(
@@ -116,18 +121,26 @@ fn best_region(bbox: &Rect, regions: &[Region]) -> Option<usize> {
 
 /// Turn the lines no region claimed into blocks of their own, by clustering
 /// the ones that sit together.
-fn recover(mut orphans: Vec<Line>) -> Vec<Block> {
+fn recover(mut orphans: Vec<Line>, columns: &[Column]) -> Vec<Block> {
     if orphans.is_empty() {
         return Vec::new();
     }
-    // Down the page, then across: the order lines are met in.
+    // By column first, then down the page: on a two-column page a plain
+    // top-to-bottom sort alternates between the columns line by line, and a
+    // paragraph can never form. Lines that cross a gutter sort after the
+    // columns; where they are *read* is settled later, by the ordering.
     orphans.sort_by(|a, b| {
-        b.bbox.top.total_cmp(&a.bbox.top).then(a.bbox.left.total_cmp(&b.bbox.left))
+        let column = |line: &Line| columns::column_of(columns, &line.bbox).unwrap_or(usize::MAX);
+        column(a)
+            .cmp(&column(b))
+            .then(b.bbox.top.total_cmp(&a.bbox.top))
+            .then(a.bbox.left.total_cmp(&b.bbox.left))
     });
 
     let mut blocks: Vec<Block> = Vec::new();
     for line in orphans {
-        let joins = blocks.last().is_some_and(|block| belongs_together(block, &line));
+        let joins =
+            blocks.last().is_some_and(|block| belongs_together(block, &line, columns));
         match (joins, blocks.last_mut()) {
             (true, Some(block)) => {
                 block.bbox = block.bbox.union(&line.bbox);
@@ -151,8 +164,11 @@ fn recover(mut orphans: Vec<Line>) -> Vec<Block> {
 /// median: a 20 pt title sets its own lines two and a half times further apart
 /// than 9 pt body text, and against a page median it would never join itself —
 /// which is how one magazine headline came out as four separate headings.
-fn belongs_together(block: &Block, line: &Line) -> bool {
+fn belongs_together(block: &Block, line: &Line, columns: &[Column]) -> bool {
     let Some(previous) = block.lines.last() else { return false };
+    if columns::column_of(columns, &previous.bbox) != columns::column_of(columns, &line.bbox) {
+        return false;
+    }
     let scale = previous.bbox.height().max(line.bbox.height());
     if scale <= 0.0 || size_ratio(previous, line) > MAX_SIZE_RATIO {
         return false;

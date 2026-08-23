@@ -7,6 +7,7 @@
 //! the Markdown is assembled.
 
 pub mod assemble;
+pub mod columns;
 pub mod detect;
 pub mod geometry;
 #[cfg(feature = "layout")]
