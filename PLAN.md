@@ -188,6 +188,21 @@ Prestazioni: la pagina si rasterizza **una volta sola**, condivisa tra modello
 di layout e crop delle figure (erano due render a 150 DPI). ~0,8 s/pagina,
 dominati dall'inferenza del layout su CPU.
 
+**Misura sul corpus nativo (2026-08-23)** — Markdown prodotto confrontato a
+multiset di parole con la verità del benchmark (il testo che pdfium estrae
+dallo stesso PDF), `tools/benchmark/score.py`. Recall ≥ 98% su 8 documenti su
+15, ≥ 94% su 13. Le perdite residue **non sono contenuto**:
+- **furniture** (testate correnti, watermark, rubriche ripetute), scartata per
+  scelta: su `AI CNEL` sono 1.045 parole delle 2.797 mancanti;
+- **sillabazione riparata**: altre 1.361 sono token che la verità contiene
+  spezzati (`artifi<ctrl>ciale`) e noi produciamo interi — il nostro output è
+  *migliore* del riferimento, e la metrica lo conta come perdita;
+- su `2025_10_24` mancano anche le **14 pagine instradate a OCR** dai finding
+  di chk_defaced (ramo OCR non ancora attivo, avviso nel MD).
+⚠ trovato così un difetto reale e corretto: la de-sillabazione guardava solo
+il trattino ASCII, mentre le colonne del Sole 24 Ore usano un glifo mappato su
+un carattere di controllo — precisione da 92,7% a 96,1% su quel documento.
+
 Resta da fare in Fase 3: heading multilivello (bookmark + tier tipografici),
 tabelle dalle rules, liste e codice, postprocess (numeri di pagina, URL).
 - **Struttura e ordine di lettura da PP-DocLayoutV3** (indicazione dell'autore,

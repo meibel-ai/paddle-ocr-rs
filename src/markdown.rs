@@ -174,8 +174,8 @@ pub fn join_lines(lines: &[String]) -> String {
             // A hyphen at a line break: drop it when it only split a word,
             // keep it when it belongs to a compound — but never put a space
             // after it, because the break was inside one word either way.
-            Some('-') => {
-                if starts_lowercase(line) {
+            Some(last) if is_break_hyphen(last) => {
+                if starts_lowercase(line) || !is_visible_hyphen(last) {
                     out.pop();
                 }
                 out.push_str(line);
@@ -191,6 +191,23 @@ pub fn join_lines(lines: &[String]) -> String {
 
 fn starts_lowercase(text: &str) -> bool {
     text.chars().next().is_some_and(char::is_lowercase)
+}
+
+/// A character that can end a line as the hyphen of a broken word.
+///
+/// Not only ASCII `-`: a document may use a real hyphen (U+2010), a
+/// non-breaking one (U+2011), a soft hyphen, or — as the columns of
+/// `AI CNEL.pdf` do — a font whose `ToUnicode` maps its hyphen glyph to a
+/// control character. Missing those left the Markdown full of half words
+/// (`produ` + `zione`).
+fn is_break_hyphen(c: char) -> bool {
+    is_visible_hyphen(c) || c == '\u{00ad}' || c.is_control()
+}
+
+/// A hyphen a reader can see, and that therefore might belong to a compound.
+/// A soft hyphen or a control character never does: it only marks the break.
+fn is_visible_hyphen(c: char) -> bool {
+    matches!(c, '-' | '\u{2010}' | '\u{2011}')
 }
 
 /// The whole document, with a heading for each page break where it helps a
@@ -250,6 +267,20 @@ mod tests {
         assert_eq!(join_lines(&["Regolamento-".into(), "Quadro".into()]), "Regolamento-Quadro");
         // So does a range of years.
         assert_eq!(join_lines(&["2017-".into(), "2020 e oltre".into()]), "2017-2020 e oltre");
+    }
+
+    #[test]
+    fn a_hyphen_that_is_not_ascii_still_breaks_a_word() {
+        // Il Sole 24 Ore's columns hyphenate with a glyph whose ToUnicode is a
+        // control character; missing it left "produ" and "zione" apart in the
+        // Markdown of every page of AI CNEL.pdf.
+        assert_eq!(join_lines(&["produ\u{2}".into(), "zione".into()]), "produzione");
+        assert_eq!(join_lines(&["produ\u{2010}".into(), "zione".into()]), "produzione");
+        assert_eq!(join_lines(&["produ\u{ad}".into(), "zione".into()]), "produzione");
+        // An invisible break marker is dropped even before a capital: unlike a
+        // real hyphen it was never part of the word.
+        assert_eq!(join_lines(&["Euro\u{ad}".into(), "Stat".into()]), "EuroStat");
+        assert_eq!(join_lines(&["Euro-".into(), "Stat".into()]), "Euro-Stat");
     }
 
     #[test]
