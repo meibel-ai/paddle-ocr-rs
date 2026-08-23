@@ -13,5 +13,6 @@ pub mod geometry;
 pub mod layout;
 
 pub mod integrity;
+pub mod markdown;
 pub mod native;
 pub mod region;

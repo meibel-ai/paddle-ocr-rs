@@ -42,6 +42,17 @@ impl Rect {
         }
     }
 
+    /// How much of `self` lies inside `other`, by area, from 0 to 1.
+    pub fn share_inside(&self, outer: &Rect) -> f32 {
+        let width = (self.right.min(outer.right) - self.left.max(outer.left)).max(0.0);
+        let height = (self.top.min(outer.top) - self.bottom.max(outer.bottom)).max(0.0);
+        let area = self.width() * self.height();
+        if area <= 0.0 {
+            return 0.0;
+        }
+        (width * height / area).clamp(0.0, 1.0)
+    }
+
     /// How much of `self`'s height overlaps `other`'s, as a fraction of the
     /// shorter of the two — the test for "these sit on the same line".
     pub fn vertical_overlap(&self, other: &Rect) -> f32 {
@@ -81,6 +92,15 @@ mod tests {
 
         let apart = Rect::new(0.0, 30.0, 1.0, 40.0);
         assert_eq!(tall.vertical_overlap(&apart), 0.0);
+    }
+
+    #[test]
+    fn share_inside_measures_containment() {
+        let outer = Rect::new(0.0, 0.0, 100.0, 100.0);
+        assert_eq!(Rect::new(10.0, 10.0, 20.0, 20.0).share_inside(&outer), 1.0);
+        assert_eq!(Rect::new(200.0, 0.0, 300.0, 10.0).share_inside(&outer), 0.0);
+        // Exactly half inside.
+        assert_eq!(Rect::new(50.0, 0.0, 150.0, 100.0).share_inside(&outer), 0.5);
     }
 
     #[test]

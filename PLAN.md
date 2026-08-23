@@ -163,8 +163,33 @@ legge titolo → colonna 1 completa → colonna 2 → colonna 3, senza
 interlacciare; `OJ_L_202402853` p.5 riconosce header/footer come `furniture`,
 le note come `aside`, e segue i paragrafi numerati.
 
-Resta da fare in Fase 3: emissione Markdown, heading (bookmark + tipografia),
-tabelle dalle rules, liste/codice/caption, postprocess.
+**Emissione Markdown e immagini: FATTO (2026-08-23)** — `src/markdown.rs`.
+56 test verdi. `pdf2md <in.pdf> -o out.md [--images embed|files|skip]`.
+- paragrafi ricomposti dalle righe con **de-sillabazione**: il trattino di fine
+  riga cade se la riga dopo inizia minuscola (`ammi-`+`nistrazione`), resta se
+  è un composto (`Regolamento-`+`Quadro`) o un intervallo (`2017-`+`2020`) — e
+  in nessuno dei due casi si inserisce uno spazio;
+- title → `#`, heading → `##`, caption → corsivo, furniture scartata (o tenuta
+  con un flag);
+- **immagini**: croppate dal raster della pagina, non estratte come oggetti —
+  una figura è spesso *disegnata* (grafico, diagramma, logo vettoriale) e il
+  crop le prende tutte allo stesso modo. Due modalità come richiesto:
+  `embed` (data URI JPEG q82, un file solo) e `files` (PNG accanto al MD,
+  nome slugificato perché uno spazio nel link Markdown lo tronca);
+- pagine instradate a OCR: nel MD ci va un avviso, mai un buco silenzioso.
+
+⚠ due bug trovati durante la verifica: le regioni figura **senza testo**
+venivano scartate (una figura non ha righe!) e le immagini che il modello non
+colloca sparivano — su `italia grafica` si passa da 40 a **180 immagini**
+estratte. Ora una figura senza righe sopravvive e le immagini fuori regione
+diventano regioni figura proprie (soglia 16 pt per non raccogliere spaziatori).
+
+Prestazioni: la pagina si rasterizza **una volta sola**, condivisa tra modello
+di layout e crop delle figure (erano due render a 150 DPI). ~0,8 s/pagina,
+dominati dall'inferenza del layout su CPU.
+
+Resta da fare in Fase 3: heading multilivello (bookmark + tier tipografici),
+tabelle dalle rules, liste e codice, postprocess (numeri di pagina, URL).
 - **Struttura e ordine di lettura da PP-DocLayoutV3** (indicazione dell'autore,
   2026-08-23): sui PDF nativi si applica il modello di layout per ottenere i
   raggruppamenti di contenuto e l'**ordine semantico di lettura**, invece di

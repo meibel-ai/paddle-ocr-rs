@@ -51,14 +51,45 @@ pub fn bind_pdfium() -> Result<Pdfium, PdfiumError> {
     Ok(Pdfium::new(Pdfium::bind_to_library(library)?))
 }
 
+/// A rendered page, with what is needed to cut a piece out of it again.
+///
+/// Figures are cropped from the raster rather than pulled out as image
+/// objects: a figure is often drawn — a chart, a diagram, a logo in vector
+/// art — and cropping catches all of those the same way, at the resolution
+/// the reader will see.
+pub struct Raster {
+    pub image: image::RgbImage,
+    pub dpi: f32,
+    /// Height of the page in points, to flip a PDF box onto the raster.
+    pub page_height: f32,
+}
+
+impl Raster {
+    /// Cut out the part of the page a box covers, given in PDF points.
+    /// `None` when the box falls outside the raster or has no area.
+    pub fn crop(&self, region: crate::geometry::Rect) -> Option<image::RgbImage> {
+        let scale = self.dpi / 72.0;
+        let left = (region.left * scale).floor().max(0.0) as u32;
+        let top = ((self.page_height - region.top) * scale).floor().max(0.0) as u32;
+        let right = (region.right * scale).ceil().min(self.image.width() as f32) as u32;
+        let bottom =
+            ((self.page_height - region.bottom) * scale).ceil().min(self.image.height() as f32) as u32;
+        if right <= left || bottom <= top {
+            return None;
+        }
+        Some(image::imageops::crop_imm(&self.image, left, top, right - left, bottom - top).to_image())
+    }
+}
+
 /// Render a page to a raster at the given resolution.
 ///
 /// The scale is `dpi / 72` because a PDF point *is* 1/72 inch, so the two
 /// resolutions never have to be reconciled anywhere else: whoever renders also
 /// knows how to map a pixel back to a point.
-pub fn render_page(page: &PdfPage, dpi: f32) -> Result<image::RgbImage, PdfiumError> {
+pub fn render_page(page: &PdfPage, dpi: f32) -> Result<Raster, PdfiumError> {
     let config = PdfRenderConfig::new().scale_page_by_factor(dpi / 72.0);
-    Ok(page.render_with_config(&config)?.as_image().into_rgb8())
+    let image = page.render_with_config(&config)?.as_image().into_rgb8();
+    Ok(Raster { image, dpi, page_height: page.height().value })
 }
 
 /// The lines of every page of a document, in pdfium's order.

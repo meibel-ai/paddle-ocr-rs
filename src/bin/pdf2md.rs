@@ -1,18 +1,33 @@
-//! `pdf2md` — the pipeline's command line, so far a window onto each stage:
+//! `pdf2md` — PDF to Markdown, plus a window onto each stage of the pipeline:
 //! how pages are classified and routed, what the native branch reads, what a
 //! page draws besides text, and what the layout model makes of it.
-//!
-//! Markdown itself comes with the rest of Phase 3.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
+use pdf_extractor_2_md::assemble;
 use pdf_extractor_2_md::detect::{self, DocumentReport, ScanStrategy};
 use pdf_extractor_2_md::integrity::{self, ChkDefaced, IntegrityCheck};
+use pdf_extractor_2_md::markdown::{self, Images, Options, Writer, FIGURE_DPI};
 use pdf_extractor_2_md::native;
+use pdf_extractor_2_md::region::Region;
 
-const USAGE: &str = "usage: pdf2md <input.pdf> [--sample N] [--lines PAGE] [--structure]\n\
-                     (--lines 0 = every page; --structure = outline, metadata, rules, images)";
+const USAGE: &str = "\
+usage: pdf2md <input.pdf> [-o out.md] [--images embed|files|skip]
+       pdf2md <input.pdf> --report [--sample N]   pages, routing and integrity
+       pdf2md <input.pdf> --lines PAGE            lines the native branch reads (0 = all)
+       pdf2md <input.pdf> --structure             outline, metadata, rules, images
+       pdf2md <input.pdf> --layout PAGE           regions and reading order (feature `layout`)";
+
+/// What the command was asked to do.
+enum Task {
+    Convert { output: Option<PathBuf>, images: Images },
+    Report(ScanStrategy),
+    Lines(usize),
+    Structure,
+    #[cfg(feature = "layout")]
+    Layout(usize),
+}
 
 fn main() -> ExitCode {
     let mut args = std::env::args().skip(1);
@@ -20,144 +35,282 @@ fn main() -> ExitCode {
         eprintln!("{USAGE}");
         return ExitCode::FAILURE;
     };
+    let path = PathBuf::from(&input);
+
+    let mut task = Task::Convert { output: None, images: Images::Embed };
     let mut strategy = ScanStrategy::Full;
-    let mut lines_of_page = None;
-    let mut structure = false;
     while let Some(flag) = args.next() {
         match flag.as_str() {
-            "--structure" => structure = true,
-            #[cfg(feature = "layout")]
-            "--layout" => {
-                let Some(value) = args.next().and_then(|v| v.parse::<usize>().ok()) else {
-                    eprintln!("{USAGE}");
+            "--structure" => task = Task::Structure,
+            "--report" => task = Task::Report(strategy),
+            _ => {
+                let Some(argument) = args.next() else {
+                    eprintln!("{flag} needs a value\n{USAGE}");
                     return ExitCode::FAILURE;
                 };
-                return print_layout(Path::new(&input), value);
-            }
-            "--sample" | "--lines" => {
-                let Some(value) = args.next().and_then(|v| v.parse::<usize>().ok()) else {
-                    eprintln!("{USAGE}");
-                    return ExitCode::FAILURE;
-                };
-                match flag.as_str() {
-                    "--sample" => strategy = ScanStrategy::Sample(value),
-                    _ => lines_of_page = Some(value),
+                match (flag.as_str(), argument) {
+                    ("-o", out) => {
+                        if let Task::Convert { output, .. } = &mut task {
+                            *output = Some(PathBuf::from(out));
+                        }
+                    }
+                    ("--images", mode) => match images_mode(&mode, &path) {
+                        Some(images) => {
+                            if let Task::Convert { images: slot, .. } = &mut task {
+                                *slot = images;
+                            }
+                        }
+                        None => {
+                            eprintln!("--images wants embed, files or skip\n{USAGE}");
+                            return ExitCode::FAILURE;
+                        }
+                    },
+                    ("--sample", n) => match n.parse() {
+                        Ok(n) => {
+                            strategy = ScanStrategy::Sample(n);
+                            task = Task::Report(strategy);
+                        }
+                        Err(_) => {
+                            eprintln!("--sample wants a page count\n{USAGE}");
+                            return ExitCode::FAILURE;
+                        }
+                    },
+                    ("--lines", n) => match n.parse() {
+                        Ok(n) => task = Task::Lines(n),
+                        Err(_) => return usage_error(),
+                    },
+                    #[cfg(feature = "layout")]
+                    ("--layout", n) => match n.parse() {
+                        Ok(n) => task = Task::Layout(n),
+                        Err(_) => return usage_error(),
+                    },
+                    _ => return usage_error(),
                 }
             }
-            _ => {
-                eprintln!("{USAGE}");
-                return ExitCode::FAILURE;
-            }
         }
     }
 
-    let path = Path::new(&input);
-    if structure {
-        return print_structure(path);
+    match task {
+        Task::Convert { output, images } => convert(&path, output, images),
+        Task::Report(strategy) => report(&path, strategy),
+        Task::Lines(page) => print_lines(&path, page),
+        Task::Structure => print_structure(&path),
+        #[cfg(feature = "layout")]
+        Task::Layout(page) => print_layout(&path, page),
     }
-    if let Some(number) = lines_of_page {
-        return print_lines(path, number);
+}
+
+fn usage_error() -> ExitCode {
+    eprintln!("{USAGE}");
+    ExitCode::FAILURE
+}
+
+fn images_mode(mode: &str, input: &Path) -> Option<Images> {
+    match mode {
+        "embed" => Some(Images::Embed),
+        "skip" => Some(Images::Skip),
+        "files" => Some(Images::Files {
+            dir: input.parent().unwrap_or(Path::new(".")).to_path_buf(),
+            prefix: slug(&input.file_stem().unwrap_or_default().to_string_lossy()),
+        }),
+        _ => None,
     }
-    let document = match lopdf::Document::load(path) {
-        Ok(document) => document,
-        Err(error) => {
-            eprintln!("cannot open {}: {error}", path.display());
-            return ExitCode::FAILURE;
+}
+
+/// Figure regions for the images no region covers.
+///
+/// The layout model places what it recognises; an image it passes over — a
+/// letterhead, a stamp, a logo in a margin — would otherwise leave the
+/// Markdown without a word being said about it.
+fn images_outside(page: &pdfium_render::prelude::PdfPage, regions: &[Region]) -> Vec<Region> {
+    use pdf_extractor_2_md::region::RegionKind;
+
+    /// Side below which a placed image is a spacer, a rule or a bullet dot
+    /// rather than a figure worth carrying into the Markdown.
+    const MIN_SIDE: f32 = 16.0;
+
+    native::objects::images(page)
+        .into_iter()
+        .filter(|placement| {
+            placement.bbox.width() >= MIN_SIDE && placement.bbox.height() >= MIN_SIDE
+        })
+        .filter(|placement| {
+            regions.iter().all(|region| placement.bbox.share_inside(&region.bbox) < 0.5)
+        })
+        .map(|placement| Region::plain(placement.bbox, RegionKind::Figure))
+        .collect()
+}
+
+/// A file name safe to write into a Markdown link: a space in a destination
+/// ends it, so `italia grafica-001.png` would link to `italia`.
+fn slug(name: &str) -> String {
+    let cleaned: String = name
+        .chars()
+        .map(|c| if c.is_alphanumeric() { c.to_ascii_lowercase() } else { '-' })
+        .collect();
+    let trimmed = cleaned.trim_matches('-').to_string();
+    let mut out = String::with_capacity(trimmed.len());
+    let mut previous_dash = false;
+    for c in trimmed.chars() {
+        if c == '-' && previous_dash {
+            continue;
         }
+        previous_dash = c == '-';
+        out.push(c);
+    }
+    if out.is_empty() { "figure".to_string() } else { out }
+}
+
+/// The conversion itself: route the pages, read the ones the native branch
+/// owns, and write what came out.
+fn convert(path: &Path, output: Option<PathBuf>, images: Images) -> ExitCode {
+    let Ok(document) = lopdf::Document::load(path) else {
+        eprintln!("cannot open {}", path.display());
+        return ExitCode::FAILURE;
+    };
+    let mut routing = detect::scan_document(&document, ScanStrategy::Full);
+    if let Ok(found) = ChkDefaced::default().inspect(&document, &path.display().to_string()) {
+        integrity::route_defaced_pages(&found, &mut routing);
+    }
+
+    let Ok(pdfium) = native::bind_pdfium() else {
+        eprintln!("pdfium unavailable from {}", native::native_dir().display());
+        return ExitCode::FAILURE;
+    };
+    let Ok(rendered) = pdfium.load_pdf_from_file(path, None) else {
+        eprintln!("pdfium cannot open {}", path.display());
+        return ExitCode::FAILURE;
     };
 
-    let mut report = detect::scan_document(&document, strategy);
-    println!(
-        "{}: {} — {} of {} pages scanned",
-        path.display(),
-        report.kind().as_str(),
-        report.pages.len(),
-        report.total_pages,
-    );
+    // The Files mode writes beside the Markdown, not beside the PDF.
+    let images = match (images, &output) {
+        (Images::Files { prefix, .. }, Some(out)) => Images::Files {
+            dir: out.parent().unwrap_or(Path::new(".")).to_path_buf(),
+            prefix,
+        },
+        (images, _) => images,
+    };
+    let mut writer = Writer::new(Options { images, keep_furniture: false });
+    let mut layout = open_layout_model();
+    let mut pages = Vec::new();
 
-    match ChkDefaced::default().inspect(&document, &path.display().to_string()) {
-        Ok(found) => {
-            let routed = integrity::route_defaced_pages(&found, &mut report);
-            print_integrity(&found, routed);
+    for (index, page) in rendered.pages().iter().enumerate() {
+        let number = index as u32 + 1;
+        // A page the router sent to OCR is not read natively. Saying so in
+        // the document beats leaving a hole in it.
+        if let Some(reason) = routing.pages.iter().find(|p| p.number == number).and_then(|p| p.ocr)
+        {
+            pages.push(format!(
+                "> ⚠ pagina {number}: da leggere con OCR ({}) — ramo non ancora attivo\n\n",
+                reason.as_str()
+            ));
+            continue;
         }
-        // An integrity check that cannot run must not stop the extraction: it
-        // is a warning, not the deliverable.
-        Err(error) => eprintln!("integrity check unavailable: {error}"),
+        let lines = native::text::page_lines(&page).unwrap_or_default();
+        if lines.is_empty() {
+            continue;
+        }
+        let raster = native::render_page(&page, FIGURE_DPI).ok();
+        let mut regions = regions_of(&mut layout, raster.as_ref());
+        regions.extend(images_outside(&page, &regions));
+        let blocks = assemble::assemble(lines, &regions);
+        pages.push(writer.page(&blocks, raster.as_ref()));
     }
 
-    print_pages(&report);
+    let out = markdown::document(&pages);
+    match output {
+        Some(file) => match std::fs::write(&file, &out) {
+            Ok(()) => println!("{}: {} byte in {}", path.display(), out.len(), file.display()),
+            Err(error) => {
+                eprintln!("cannot write {}: {error}", file.display());
+                return ExitCode::FAILURE;
+            }
+        },
+        None => print!("{out}"),
+    }
     ExitCode::SUCCESS
+}
+
+// Without the layout model there is no model to open, and regions come from
+// geometry alone: every line is an orphan, so clustering and the XY cut do
+// the work.
+#[cfg(not(feature = "layout"))]
+fn open_layout_model() {}
+
+#[cfg(not(feature = "layout"))]
+fn regions_of(_: &mut (), _: Option<&native::Raster>) -> Vec<Region> {
+    Vec::new()
+}
+
+#[cfg(feature = "layout")]
+fn open_layout_model() -> Option<pdf_extractor_2_md::layout::LayoutModel> {
+    use pdf_extractor_2_md::layout::LayoutModel;
+
+    if std::env::var_os("ORT_DYLIB_PATH").is_none() {
+        std::env::set_var("ORT_DYLIB_PATH", native::onnxruntime_path());
+    }
+    let model = std::env::var("PDF2MD_LAYOUT_MODEL")
+        .unwrap_or_else(|_| "models/paddleocr/layout/PP-DocLayoutV3.onnx".to_string());
+    match LayoutModel::open(&model) {
+        Ok(model) => Some(model),
+        Err(error) => {
+            // Losing the model costs structure, not the document: geometry
+            // still orders the page.
+            eprintln!("layout model unavailable ({error}); falling back to geometry");
+            None
+        }
+    }
+}
+
+#[cfg(feature = "layout")]
+fn regions_of(
+    model: &mut Option<pdf_extractor_2_md::layout::LayoutModel>,
+    raster: Option<&native::Raster>,
+) -> Vec<Region> {
+    use pdf_extractor_2_md::layout;
+
+    // The page is rendered once and both the model and the figure crops read
+    // that same raster: rendering is the most expensive thing on the page, and
+    // the layout pass and the figures want the same resolution anyway.
+    let (Some(model), Some(raster)) = (model.as_mut(), raster) else { return Vec::new() };
+    match model.regions(&raster.image) {
+        Ok(regions) => regions
+            .into_iter()
+            .map(|region| Region {
+                bbox: layout::to_points(region.bbox, raster.dpi / 72.0, raster.page_height),
+                ..region
+            })
+            .collect(),
+        Err(_) => Vec::new(),
+    }
 }
 
 /// The regions the layout model finds on a page, in the page's own points.
 #[cfg(feature = "layout")]
 fn print_layout(path: &Path, number: usize) -> ExitCode {
-    use pdf_extractor_2_md::layout::{self, LayoutModel, LAYOUT_DPI};
-    use pdf_extractor_2_md::{assemble, region::Region};
+    use pdf_extractor_2_md::layout::LAYOUT_DPI;
 
-    // ort opens ONNX Runtime by this variable. Defaulting it to the runtime
-    // that matches this build saves the caller from pointing it at the wrong
-    // architecture, which fails with an error that explains nothing.
-    if std::env::var_os("ORT_DYLIB_PATH").is_none() {
-        std::env::set_var("ORT_DYLIB_PATH", native::onnxruntime_path());
+    let mut model = open_layout_model();
+    if model.is_none() {
+        return ExitCode::FAILURE;
     }
-    let model_path = std::env::var("PDF2MD_LAYOUT_MODEL")
-        .unwrap_or_else(|_| "models/paddleocr/layout/PP-DocLayoutV3.onnx".to_string());
-    let mut model = match LayoutModel::open(&model_path) {
-        Ok(model) => model,
-        Err(error) => {
-            eprintln!("cannot load {model_path}: {error}");
-            eprintln!("ORT_DYLIB_PATH must point at native/<arch>/onnxruntime.dll");
-            return ExitCode::FAILURE;
-        }
-    };
     let Ok(pdfium) = native::bind_pdfium() else {
         eprintln!("pdfium unavailable from {}", native::native_dir().display());
         return ExitCode::FAILURE;
     };
-    let document = match pdfium.load_pdf_from_file(path, None) {
-        Ok(document) => document,
-        Err(error) => {
-            eprintln!("cannot open {}: {error}", path.display());
-            return ExitCode::FAILURE;
-        }
+    let Ok(document) = pdfium.load_pdf_from_file(path, None) else {
+        eprintln!("cannot open {}", path.display());
+        return ExitCode::FAILURE;
     };
     let Some(page) = document.pages().iter().nth(number.saturating_sub(1)) else {
         eprintln!("page {number} is out of range");
         return ExitCode::FAILURE;
     };
 
-    let raster = match native::render_page(&page, LAYOUT_DPI) {
-        Ok(raster) => raster,
-        Err(error) => {
-            eprintln!("cannot render page {number}: {error}");
-            return ExitCode::FAILURE;
-        }
-    };
-    let regions = match model.regions(&raster) {
-        Ok(regions) => regions,
-        Err(error) => {
-            eprintln!("layout failed on page {number}: {error}");
-            return ExitCode::FAILURE;
-        }
-    };
-    // The model works in raster pixels; everything downstream works in the
-    // page's own points, so the regions are brought back here and once only.
-    let height = page.height().value;
-    let scale = LAYOUT_DPI / 72.0;
-    let regions: Vec<_> = regions
-        .into_iter()
-        .map(|region| Region { bbox: layout::to_points(region.bbox, scale, height), ..region })
-        .collect();
-
+    let raster = native::render_page(&page, LAYOUT_DPI).ok();
+    let regions = regions_of(&mut model, raster.as_ref());
     let lines = native::text::page_lines(&page).unwrap_or_default();
-    println!(
-        "page {number}: {} regions, {} lines ({}x{} px)",
-        regions.len(),
-        lines.len(),
-        raster.width(),
-        raster.height(),
-    );
+    println!("page {number}: {} regions, {} lines at {LAYOUT_DPI} DPI", regions.len(), lines.len());
     for block in assemble::assemble(lines, &regions) {
         let text = block.text().replace('\n', " ");
         let shown: String = text.chars().take(96).collect();
@@ -181,12 +334,9 @@ fn print_structure(path: &Path) -> ExitCode {
         eprintln!("pdfium unavailable from {}", native::native_dir().display());
         return ExitCode::FAILURE;
     };
-    let document = match pdfium.load_pdf_from_file(path, None) {
-        Ok(document) => document,
-        Err(error) => {
-            eprintln!("cannot open {}: {error}", path.display());
-            return ExitCode::FAILURE;
-        }
+    let Ok(document) = pdfium.load_pdf_from_file(path, None) else {
+        eprintln!("cannot open {}", path.display());
+        return ExitCode::FAILURE;
     };
 
     let metadata = native::outline::metadata(&document);
@@ -225,26 +375,20 @@ fn print_structure(path: &Path) -> ExitCode {
     ExitCode::SUCCESS
 }
 
-/// Dump the lines pdfium yields for one page, with their boxes — how the
-/// native branch actually reads a multi-column page or a table.
+/// Dump the lines pdfium yields, with their boxes — how the native branch
+/// actually reads a multi-column page or a table.
 fn print_lines(path: &Path, number: usize) -> ExitCode {
-    let pdfium = match native::bind_pdfium() {
-        Ok(pdfium) => pdfium,
-        Err(error) => {
-            eprintln!("pdfium unavailable from {}: {error}", native::native_dir().display());
-            return ExitCode::FAILURE;
-        }
+    let Ok(pdfium) = native::bind_pdfium() else {
+        eprintln!("pdfium unavailable from {}", native::native_dir().display());
+        return ExitCode::FAILURE;
     };
-    let document = match pdfium.load_pdf_from_file(path, None) {
-        Ok(document) => document,
-        Err(error) => {
-            eprintln!("cannot open {}: {error}", path.display());
-            return ExitCode::FAILURE;
-        }
+    let Ok(document) = pdfium.load_pdf_from_file(path, None) else {
+        eprintln!("cannot open {}", path.display());
+        return ExitCode::FAILURE;
     };
+    let pages: Vec<_> = document.pages().iter().collect();
     // Page 0 means the whole document, which is what a sweep over a corpus
     // wants; any other number is that one page.
-    let pages: Vec<_> = document.pages().iter().collect();
     let selected: Vec<usize> = match number {
         0 => (0..pages.len()).collect(),
         n if n <= pages.len() => vec![n - 1],
@@ -276,6 +420,33 @@ fn print_lines(path: &Path, number: usize) -> ExitCode {
     ExitCode::SUCCESS
 }
 
+/// Pages, routing and integrity.
+fn report(path: &Path, strategy: ScanStrategy) -> ExitCode {
+    let Ok(document) = lopdf::Document::load(path) else {
+        eprintln!("cannot open {}", path.display());
+        return ExitCode::FAILURE;
+    };
+    let mut found = detect::scan_document(&document, strategy);
+    println!(
+        "{}: {} — {} of {} pages scanned",
+        path.display(),
+        found.kind().as_str(),
+        found.pages.len(),
+        found.total_pages,
+    );
+    match ChkDefaced::default().inspect(&document, &path.display().to_string()) {
+        Ok(integrity_report) => {
+            let routed = integrity::route_defaced_pages(&integrity_report, &mut found);
+            print_integrity(&integrity_report, routed);
+        }
+        // An integrity check that cannot run must not stop the extraction: it
+        // is a warning, not the deliverable.
+        Err(error) => eprintln!("integrity check unavailable: {error}"),
+    }
+    print_pages(&found);
+    ExitCode::SUCCESS
+}
+
 fn print_pages(report: &DocumentReport) {
     for page in &report.pages {
         let signals = &page.signals;
@@ -297,8 +468,7 @@ fn print_pages(report: &DocumentReport) {
             ocr,
         );
     }
-    let needing_ocr = report.pages_needing_ocr().count();
-    println!("  {needing_ocr} page(s) need OCR");
+    println!("  {} page(s) need OCR", report.pages_needing_ocr().count());
 }
 
 fn print_integrity(report: &chk_defaced::finding::Report, routed: usize) {

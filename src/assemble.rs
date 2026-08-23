@@ -83,7 +83,9 @@ fn distribute(lines: Vec<Line>, regions: &[Region]) -> (Vec<Block>, Vec<Line>) {
     let blocks = regions
         .iter()
         .zip(held)
-        .filter(|(_, lines)| !lines.is_empty())
+        // A figure region holding no line is still a figure: dropping it
+        // would lose the image without a word being said.
+        .filter(|(region, lines)| !lines.is_empty() || region.kind == RegionKind::Figure)
         .map(|(region, lines)| Block {
             kind: region.kind,
             bbox: region.bbox,
@@ -100,21 +102,10 @@ fn best_region(bbox: &Rect, regions: &[Region]) -> Option<usize> {
     regions
         .iter()
         .enumerate()
-        .map(|(index, region)| (index, covered_share(bbox, &region.bbox)))
+        .map(|(index, region)| (index, bbox.share_inside(&region.bbox)))
         .filter(|(_, share)| *share >= INSIDE_SHARE)
         .max_by(|a, b| a.1.total_cmp(&b.1))
         .map(|(index, _)| index)
-}
-
-/// How much of `inner` lies inside `outer`, by area.
-fn covered_share(inner: &Rect, outer: &Rect) -> f32 {
-    let width = (inner.right.min(outer.right) - inner.left.max(outer.left)).max(0.0);
-    let height = (inner.top.min(outer.top) - inner.bottom.max(outer.bottom)).max(0.0);
-    let area = inner.width() * inner.height();
-    if area <= 0.0 {
-        return 0.0;
-    }
-    (width * height / area).clamp(0.0, 1.0)
 }
 
 /// Turn the lines no region claimed into blocks of their own, by clustering
