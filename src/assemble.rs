@@ -69,7 +69,8 @@ pub fn assemble(lines: Vec<Line>, regions: &[Region]) -> Vec<Block> {
     // that no region claimed still belongs to a column, and clustering across
     // a gutter is how a paragraph ends up carrying its neighbour's sentences.
     let columns = columns::detect(&lines);
-    let (mut blocks, orphans) = distribute(lines, regions);
+    let regions = split_across_columns(regions, &lines, &columns);
+    let (mut blocks, orphans) = distribute(lines, &regions);
     blocks.extend(recover(orphans, &columns));
 
     let ordered = order_blocks(blocks);
@@ -79,6 +80,47 @@ pub fn assemble(lines: Vec<Line>, regions: &[Region]) -> Vec<Block> {
         "ordering reorders, it does not filter",
     );
     ordered
+}
+
+/// Split a region drawn across a gutter when the lines inside it all stay on
+/// one side or the other.
+///
+/// A layout model can merge two columns into one region, and every line of
+/// both then lands in the same block, interleaved. The tell is precise: the
+/// region holds lines from more than one column and **none** that crosses the
+/// gutter. A full-width title or a table spanning the page does have a line
+/// crossing it, and is left alone.
+fn split_across_columns(regions: &[Region], lines: &[Line], columns: &[Column]) -> Vec<Region> {
+    if columns.len() < 2 {
+        return regions.to_vec();
+    }
+    let mut out = Vec::with_capacity(regions.len());
+    for region in regions {
+        let held: Vec<&Line> = lines
+            .iter()
+            .filter(|line| line.bbox.share_inside(&region.bbox) >= INSIDE_SHARE)
+            .collect();
+        let spanning = held.iter().any(|line| columns::column_of(columns, &line.bbox).is_none());
+        let mut parts: Vec<(usize, Rect)> = Vec::new();
+        if !spanning {
+            for line in &held {
+                let Some(column) = columns::column_of(columns, &line.bbox) else { continue };
+                match parts.iter_mut().find(|(index, _)| *index == column) {
+                    Some((_, bbox)) => *bbox = bbox.union(&line.bbox),
+                    None => parts.push((column, line.bbox)),
+                }
+            }
+        }
+        if parts.len() < 2 {
+            out.push(*region);
+            continue;
+        }
+        // Left to right, so that the stated order — which both parts inherit —
+        // is broken by position rather than by chance.
+        parts.sort_by_key(|(column, _)| *column);
+        out.extend(parts.into_iter().map(|(_, bbox)| Region { bbox, ..*region }));
+    }
+    out
 }
 
 /// Hand each line to the region that best contains it.
@@ -374,6 +416,64 @@ mod tests {
         let recovered: Vec<&Block> = blocks.iter().filter(|block| block.recovered).collect();
         assert_eq!(recovered.len(), 1, "the two orphans cluster into one block");
         assert_eq!(recovered[0].lines.len(), 2);
+    }
+
+    #[test]
+    fn a_region_the_model_drew_across_two_columns_is_split() {
+        // The model sometimes wraps both columns of a page in one region, and
+        // every line of both then lands in one block, interleaved.
+        let page: Vec<Line> = (0..20)
+            .flat_map(|i| {
+                let y = 700.0 - i as f32 * 12.0;
+                [text_line(Rect::new(50.0, y, 250.0, y + 10.0)),
+                 text_line(Rect::new(300.0, y, 500.0, y + 10.0))]
+            })
+            .collect();
+        let merged = [region(40.0, 400.0, 510.0, 715.0, Some(1))];
+
+        let blocks = assemble(page, &merged);
+        assert!(blocks.len() >= 2, "the merged region comes apart");
+        // Each block keeps to one side of the gutter.
+        for block in &blocks {
+            assert!(
+                block.bbox.right <= 260.0 || block.bbox.left >= 290.0,
+                "a block straddles the gutter: {:?}",
+                block.bbox
+            );
+        }
+    }
+
+    #[test]
+    fn a_region_spanning_the_page_is_left_whole() {
+        // A title that really does cross the gutter has a line crossing it,
+        // which is what tells it apart from two merged columns.
+        let mut page: Vec<Line> = (0..20)
+            .flat_map(|i| {
+                let y = 400.0 - i as f32 * 12.0;
+                [text_line(Rect::new(50.0, y, 250.0, y + 10.0)),
+                 text_line(Rect::new(300.0, y, 500.0, y + 10.0))]
+            })
+            .collect();
+        page.push(text_line(Rect::new(50.0, 700.0, 500.0, 720.0)));
+        let banner = [region(40.0, 695.0, 510.0, 725.0, Some(1))];
+
+        let blocks = assemble(page, &banner);
+        let banner_block = blocks.iter().find(|b| !b.recovered).expect("the banner survives");
+        assert!(banner_block.bbox.width() > 400.0, "it is not cut in two");
+    }
+
+    /// A line carrying one word, so that it has a type size to compare.
+    fn text_line(bbox: Rect) -> Line {
+        use crate::native::{Style, Word};
+        Line {
+            words: vec![Word {
+                text: "x".into(),
+                bbox,
+                style: Style { font: "T".into(), size: 10.0, bold: false, monospace: false },
+                visible: true,
+            }],
+            bbox,
+        }
     }
 
     #[test]

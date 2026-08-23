@@ -281,6 +281,21 @@ guadagni dove servivano — AI CNEL +10,7, QUALITY OF OCR +10,5, italia grafica
 (98,3→98,5, 98,5→98,7) e la frammentazione dei heading cala (rivista da 549 a
 324). Costo: 7 s → 11 s sul corpus.
 
+**Colonne applicate anche al percorso con LayoutV3 (2026-08-23)** — misurato,
+in due livelli, ed entrambi con esito nullo (annotato perché è un risultato):
+- il recupero orfani consapevole delle colonne non sposta nulla col modello
+  attivo (Δ 0,0% su tutte le metriche): le sue regioni rivendicano quasi tutte
+  le righe, di orfani non ne restano;
+- lo **split delle regioni disegnate attraverso un gutter**
+  (`assemble::split_across_columns`: si spezza solo se le righe interne stanno
+  in più colonne e nessuna attraversa — un titolo a piena pagina ha una riga
+  che attraversa e resta intero) è anch'esso Δ 0,0% su questo corpus: il
+  modello disegna già una regione per colonna. Resta come rete di sicurezza,
+  con due test; il tempo della corsa di verifica (970 s vs 650 s) non è
+  comparabile perché la macchina compilava Tesseract in parallelo.
+Conclusione: l'algoritmo di pdf-inspector serve al percorso geometrico
+(+2,3 di ordine medio), non aggiunge a quello col modello su questo corpus.
+
 Resta da fare in Fase 3: heading multilivello (bookmark + tier tipografici),
 tabelle dalle rules, liste e codice, postprocess (numeri di pagina, URL).
 - **Struttura e ordine di lettura da PP-DocLayoutV3** (indicazione dell'autore,
