@@ -87,6 +87,28 @@ stessa guardia in `glyphmatch::legitimately_identical`.
   punto aperto riservato al codice dell'autore.
 
 ### Fase 2 — Estrazione nativa via pdfium  (rif: pdf-inspector, ri-ancorato)
+
+**Testo: FATTO (2026-08-23)** — `src/native/text.rs` + `src/geometry.rs`.
+35 test verdi; verificato sul corpus (16 documenti nativi, 659 pagine): nessuna
+riga vuota, nessuna riga più larga della pagina. Quattro lezioni, tutte trovate
+sui documenti reali e tutte con test di regressione:
+- si usano i **loose bounds** (box di avanzamento), non i tight: con i tight un
+  apostrofo è troppo basso e cade fuori dalla sua riga, e il sidebearing dei
+  digit inventa spazi dentro i numeri (`2017/2394` → `201 7/2394`);
+- la riga si taglia sulla **baseline** (`origin_y`), non sulla sovrapposizione
+  dei box: con leading stretto due righe di titolo si fondevano
+  (`PRODUZIONE` + `A NON FINIRE`);
+- le interruzioni che pdfium *genera* tra text object non sono confini: cadono
+  dentro le parole (`dell’`+`esecuzione`, 0,6 pt). Contano solo gli **spazi**
+  veri, più la geometria dove spazi non ce ne sono;
+- la geometria da sola non basta: i loose box si sovrappongono di ~0,5 pt per
+  lato, quindi uno spazio da 0,23 em misura 0,07 em (tutto `AI CNEL.pdf`
+  usciva senza spazi). Da qui la doppia evidenza spazio+gap.
+Coerenza verificata: colonne mai interlacciate (`italia grafica`), celle mai
+fuse (fixture tabellare), gap ≥ 3 em separa colonna e cella.
+
+Restano da fare in Fase 2: page objects (rect/linee per le tabelle), bookmark,
+metadata, annotazioni, export immagini.
 - `FPDFText_*`: char, bbox, font (nome/peso/size), render mode, angolo.
 - Raggruppamento char→parole→righe: soglia spazio dalla larghezza reale dello
   spazio del font; join letterspaced con soglia di **Otsu**

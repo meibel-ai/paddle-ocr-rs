@@ -7,5 +7,6 @@
 //! the Markdown is assembled.
 
 pub mod detect;
+pub mod geometry;
 pub mod integrity;
 pub mod native;

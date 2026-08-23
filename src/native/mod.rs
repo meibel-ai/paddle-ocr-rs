@@ -1,10 +1,14 @@
 //! Phase 2 — the native branch, through pdfium.
 //!
 //! Text, page objects, bookmarks, metadata, annotations and images all come
-//! from here (see `PLAN.md`, Phase 2). For now: binding and a smoke report.
+//! from here (see `PLAN.md`, Phase 2).
+
+pub mod text;
 
 use pdfium_render::prelude::*;
 use std::path::{Path, PathBuf};
+
+pub use text::{Line, Style, Word};
 
 /// Directory holding the runtime libraries for the current architecture.
 ///
@@ -27,13 +31,11 @@ pub fn bind_pdfium() -> Result<Pdfium, PdfiumError> {
     Ok(Pdfium::new(Pdfium::bind_to_library(library)?))
 }
 
-/// How much text pdfium extracts from each page — the counterpart of the
-/// detection signals, and the first half of the Phase 5 fusion.
-pub fn extracted_chars_per_page(pdfium: &Pdfium, path: &Path) -> Result<Vec<usize>, PdfiumError> {
+/// The lines of every page of a document, in pdfium's order.
+///
+/// A page that cannot be read yields an empty vector rather than failing the
+/// document: one broken page must not cost the other three hundred.
+pub fn document_lines(pdfium: &Pdfium, path: &Path) -> Result<Vec<Vec<Line>>, PdfiumError> {
     let document = pdfium.load_pdf_from_file(path, None)?;
-    Ok(document
-        .pages()
-        .iter()
-        .map(|page| page.text().map(|text| text.all().chars().count()).unwrap_or(0))
-        .collect())
+    Ok(document.pages().iter().map(|page| text::page_lines(&page).unwrap_or_default()).collect())
 }

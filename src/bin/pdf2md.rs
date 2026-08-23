@@ -9,29 +9,34 @@ use std::process::ExitCode;
 
 use pdf_extractor_2_md::detect::{self, DocumentReport, ScanStrategy};
 use pdf_extractor_2_md::integrity::{self, ChkDefaced, IntegrityCheck};
+use pdf_extractor_2_md::native;
+
+const USAGE: &str = "usage: pdf2md <input.pdf> [--sample N] [--lines PAGE]  (--lines 0 = every page)";
 
 fn main() -> ExitCode {
     let mut args = std::env::args().skip(1);
     let Some(input) = args.next() else {
-        eprintln!("usage: pdf2md <input.pdf> [--sample N]");
+        eprintln!("{USAGE}");
         return ExitCode::FAILURE;
     };
-    let strategy = match (args.next().as_deref(), args.next()) {
-        (Some("--sample"), Some(n)) => match n.parse() {
-            Ok(n) => ScanStrategy::Sample(n),
-            Err(_) => {
-                eprintln!("--sample wants a page count, got {n:?}");
+    let mut strategy = ScanStrategy::Full;
+    let mut lines_of_page = None;
+    while let Some(flag) = args.next() {
+        let value = args.next().and_then(|v| v.parse::<usize>().ok());
+        match (flag.as_str(), value) {
+            ("--sample", Some(n)) => strategy = ScanStrategy::Sample(n),
+            ("--lines", Some(n)) => lines_of_page = Some(n),
+            _ => {
+                eprintln!("{USAGE}");
                 return ExitCode::FAILURE;
             }
-        },
-        (None, _) => ScanStrategy::Full,
-        (Some(other), _) => {
-            eprintln!("unknown option {other:?}");
-            return ExitCode::FAILURE;
         }
-    };
+    }
 
     let path = Path::new(&input);
+    if let Some(number) = lines_of_page {
+        return print_lines(path, number);
+    }
     let document = match lopdf::Document::load(path) {
         Ok(document) => document,
         Err(error) => {
@@ -60,6 +65,57 @@ fn main() -> ExitCode {
     }
 
     print_pages(&report);
+    ExitCode::SUCCESS
+}
+
+/// Dump the lines pdfium yields for one page, with their boxes — how the
+/// native branch actually reads a multi-column page or a table.
+fn print_lines(path: &Path, number: usize) -> ExitCode {
+    let pdfium = match native::bind_pdfium() {
+        Ok(pdfium) => pdfium,
+        Err(error) => {
+            eprintln!("pdfium unavailable from {}: {error}", native::native_dir().display());
+            return ExitCode::FAILURE;
+        }
+    };
+    let document = match pdfium.load_pdf_from_file(path, None) {
+        Ok(document) => document,
+        Err(error) => {
+            eprintln!("cannot open {}: {error}", path.display());
+            return ExitCode::FAILURE;
+        }
+    };
+    // Page 0 means the whole document, which is what a sweep over a corpus
+    // wants; any other number is that one page.
+    let pages: Vec<_> = document.pages().iter().collect();
+    let selected: Vec<usize> = match number {
+        0 => (0..pages.len()).collect(),
+        n if n <= pages.len() => vec![n - 1],
+        _ => {
+            eprintln!("page {number} is out of range ({} pages)", pages.len());
+            return ExitCode::FAILURE;
+        }
+    };
+    for index in selected {
+        let Ok(lines) = native::text::page_lines(&pages[index]) else {
+            eprintln!("cannot read page {}", index + 1);
+            continue;
+        };
+        println!("page {}: {} lines", index + 1, lines.len());
+        for line in &lines {
+            println!(
+                "  [{:>6.1},{:>6.1} {:>6.1}x{:>4.1}] {:>4.1}pt{}{} {}",
+                line.bbox.left,
+                line.bbox.bottom,
+                line.bbox.width(),
+                line.bbox.height(),
+                line.size(),
+                if line.words.first().is_some_and(|w| w.style.bold) { " b" } else { "  " },
+                if line.is_invisible() { " inv" } else { "    " },
+                line.text(),
+            );
+        }
+    }
     ExitCode::SUCCESS
 }
 
