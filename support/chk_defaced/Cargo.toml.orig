@@ -1,0 +1,132 @@
+[package]
+name = "chk_defaced"
+version = "0.2.4"
+edition = "2021"
+authors = ["Dario Finardi <df@dariofinardi.it>"]
+description = "Detect 'defaced' documents: verify the coherence of the fonts used to render text (PDF, DOCX, HTML+CSS) and build a JSON index of the system fonts' cmaps."
+license = "AGPL-3.0-only"
+repository = "https://github.com/dariofinardi/chk_defaced-rs"
+readme = "README.md"
+keywords = ["pdf", "docx", "font", "security", "ocr"]
+categories = ["text-processing", "command-line-utilities"]
+
+# Standalone crate (proprio repo git): l'`[workspace]` vuoto lo rende workspace-root indipendente
+# anche quando è checked-out annidato sotto un altro workspace (es. dentro pageindex-rs).
+[workspace]
+
+[features]
+# `cli` builds the binary (clap); `html` pulls the heavier HTML+CSS backend (scraper/html5ever);
+# `ocr-tesseract` pulls the native OCR backend (the `tesseract5-rs` crate) for the variant-C / OCR
+# escalation. Depend on the library with `default-features = false` to get only the PDF/DOCX core.
+default = ["cli", "html"]
+cli = ["dep:clap"]
+html = ["dep:scraper"]
+ocr-tesseract = ["dep:tesseract5-rs"]
+# OCR-atlas escalation for PDF: pdfium rasterization + OCR vs extracted-text comparison (variant A3/C).
+# This is the OCR FALLBACK; the deterministic outline detectors (pdf_glyph/docx_glyph) catch A3 first.
+ocr-atlas = ["ocr-tesseract", "dep:pdfium-render", "dep:image"]
+# Specimen-OCR escalation: rasterize the embedded font's own glyphs (tiny-skia, no pdfium) and OCR them
+# to recover what each glyph draws — catches custom fonts with NO honest anchor that the outline
+# cross-reference cannot. Lighter than ocr-atlas (no pdfium / page rendering).
+ocr-specimen = ["ocr-tesseract", "dep:tiny-skia"]
+# DOCX render fallback: drive an in-process Tauri webview (wry/tao) to render `docx_to_html` with the
+# embedded (possibly tampered) fonts and capture it to a bitmap (xcap), so the render-OCR comparison can
+# recover the localized/positional A3 attack that the deterministic detectors structurally cannot.
+# Browser engines apply the embedded cmaps FAITHFULLY (Skia/Typst DOCX→PDF converters launder them).
+# HTML is fed straight into the webview (`with_html`) and captured to a PNG file — no TCP port, no server.
+render-wry = ["dep:wry", "dep:tao", "dep:xcap", "dep:image", "dep:raw-window-handle", "dep:windows"]
+# DOCX render-OCR verdict: render the DOCX in the webview (`render-wry`) and OCR it (`ocr-tesseract`) to
+# confirm/refute the deterministic collision signal — the doubt-resolving fallback. Needs tessdata.
+render-ocr = ["render-wry", "ocr-tesseract"]
+
+[lib]
+name = "chk_defaced"
+path = "src/lib.rs"
+
+[[bin]]
+name = "chk_defaced"
+path = "src/main.rs"
+required-features = ["cli"]
+
+[[example]]
+name = "specimen"
+required-features = ["ocr-specimen"]
+
+[[example]]
+name = "noanchor"
+required-features = ["ocr-specimen"]
+
+# OCR-atlas examples: only buildable with the native OCR + pdfium backend.
+[[example]]
+name = "atlas"
+required-features = ["ocr-atlas"]
+
+[[example]]
+name = "glyphmap"
+required-features = ["ocr-atlas"]
+
+[[example]]
+name = "verify"
+required-features = ["ocr-atlas"]
+
+[[example]]
+name = "render_docx"
+required-features = ["render-wry"]
+
+[dependencies]
+# Fonts (pure Rust, MIT/Apache)
+ttf-parser = "0.25"
+sha2       = "0.10"
+# Unicode TR39 confusables: distinguishes real glyph substitutions from legitimate cross-script
+# homoglyphs (Latin 'A' vs Greek 'Α') in the outline detectors.
+unicode-security = "0.1"
+# Unicode script property: a glyph shared between a Latin letter and its cross-script look-alike
+# (Latin 'b' / Greek 'β' / Cyrillic 'в') is legitimate font glyph-sharing, not semantic replacement —
+# the A3 cross-reference only flags within a single script.
+unicode-script = "0.5"
+# Unicode NFKD: a base letter and its compatibility encoding (Arabic presentation forms, ligatures)
+# draw the same letter — not semantic replacement — so they normalize equal and are not flagged.
+unicode-normalization = "0.1"
+# ASCII transliteration: Latin letters that fold to the same ASCII base (ð / đ / ɖ → "d", ø → "o") are
+# the same base letter (visually confusable), not semantic replacement; distinct letters (m vs d) fold
+# differently and stay flagged.
+deunicode = "1"
+# Serialization / FS
+serde      = { version = "1", features = ["derive"] }
+serde_json = "1"
+anyhow     = "1"
+walkdir    = "2"
+regex      = "1"
+# Format backends (pure Rust, MIT)
+lopdf      = "0.36"
+zip        = { version = "2", default-features = false, features = ["deflate"] }
+quick-xml  = "0.37"
+# Optional: CLI and HTML backend
+clap       = { version = "4", features = ["derive"], optional = true }
+scraper    = { version = "0.21", optional = true }
+# Optional: native OCR backend for the variant-C / OCR-atlas escalation. High-level `tesseract5-rs`
+# (depends on the `tesseract-55-rs` binding → Tesseract 5.5 + Leptonica 1.85). Requires a native
+# Tesseract build + tessdata (see the repo's TESSERACT-BUILD-HOWTO.md).
+tesseract5-rs = { version = "0.1.1", optional = true }
+# Optional: PDF rasterization (pdfium, BSD) for the OCR-atlas escalation.
+pdfium-render = { version = "0.8.37", optional = true }
+image         = { version = "0.25", optional = true }
+# Optional: pure-Rust glyph rasterization (BSD) for the specimen-OCR escalation — renders embedded-font
+# outlines straight to a bitmap, no pdfium / no document layout.
+tiny-skia     = { version = "0.11", optional = true }
+# Optional: in-process webview (Tauri's wry/tao, Apache-2.0 OR MIT) for the DOCX render fallback. wry
+# drives WebView2 (Windows) / WKWebView (macOS) / WebKitGTK (Linux); the HTML is loaded via `with_html`
+# (no server, no port). `xcap` (Apache-2.0 OR MIT) captures the rendered window cross-platform.
+wry           = { version = "0.45", optional = true }
+tao           = { version = "0.30", optional = true }
+xcap          = { version = "0.0.14", optional = true }
+# Capture the rendered window by its HWND with `PrintWindow(PW_RENDERFULLCONTENT)` — grabs WebView2 /
+# DirectComposition surfaces even when the window is off-screen or in the background, sidestepping the
+# DWM-cloaked-window filtering of generic screen capture. `raw-window-handle` extracts the HWND from tao.
+raw-window-handle = { version = "0.6", optional = true }
+windows = { version = "0.58", optional = true, features = [
+    "Win32_Foundation", "Win32_Graphics_Gdi", "Win32_UI_WindowsAndMessaging", "Win32_Storage_Xps",
+] }
+
+[profile.release]
+opt-level = 2

@@ -1,5 +1,10 @@
 target
 Cargo.lock
 test
-models
+# models/ resta fuori dal repo (~1 GB), tranne le ground truth piccole e stabili
+# per il FontRegistry di chk_defaced (v. README_CHK_DOCUMENT.md §4-5)
+models/*
+!models/fonts/
+!models/cmaps/
 test_output
+benchmark

@@ -1,0 +1,27 @@
+chk_defaced
+Copyright (C) 2026 Dario Finardi <df@dariofinardi.it>
+
+This program is free software: you can redistribute it and/or modify it under
+the terms of the GNU Affero General Public License, version 3, as published by
+the Free Software Foundation.
+
+This program is distributed in the hope that it will be useful, but WITHOUT ANY
+WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A
+PARTICULAR PURPOSE.  See the GNU Affero General Public License for more details.
+
+You should have received a copy of the GNU Affero General Public License along
+with this program.  If not, see <https://www.gnu.org/licenses/agpl-3.0.txt>.
+
+SPDX-License-Identifier: AGPL-3.0-only
+
+--------------------------------------------------------------------------------
+
+This program is governed by the full, verbatim text of the
+
+    GNU AFFERO GENERAL PUBLIC LICENSE, Version 3, 19 November 2007
+
+which is incorporated here by reference.  When redistributing this software you
+must include a complete, verbatim copy of that license text alongside it; the
+canonical copy is available at:
+
+    https://www.gnu.org/licenses/agpl-3.0.txt

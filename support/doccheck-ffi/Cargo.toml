@@ -1,0 +1,23 @@
+[package]
+name = "edito-doccheck"
+version = "0.1.0"
+edition = "2021"
+description = "Wrapper cdylib di chk_defaced per Edito PDF Conversion: scansione anti-manomissione (font defacement / testo nascosto) esposta con ABI C al processo Go"
+publish = false
+
+[lib]
+name = "EditoDocCheck"
+crate-type = ["cdylib"]
+
+[dependencies]
+# Core deterministico di chk_defaced (crate pubblicato, © Dario Finardi, AGPL-3.0;
+# integrato in Edito PDF Conversion su autorizzazione dell'autore — vedi EULA):
+# default-features = false esclude CLI (clap), backend HTML (scraper) e le
+# feature OCR/webview: qui serve solo la scansione deterministica PDF/DOCX.
+chk_defaced = { version = "0.2.4", default-features = false }
+serde_json = "1"
+
+[profile.release]
+opt-level = 2
+lto = true
+strip = true
