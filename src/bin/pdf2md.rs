@@ -28,13 +28,13 @@ enum Task {
     Structure,
     #[cfg(feature = "layout")]
     Layout(usize),
-    #[cfg(feature = "tesseract")]
+    #[cfg(any(feature = "tesseract", feature = "ppocr"))]
     OcrImage(PathBuf),
     /// A file listing one PNG per line: each is read with a single engine —
     /// initialisation costs seconds and must not be paid per page — and the
     /// Markdown lands beside it as `<name>.tess.md`, with a timing line on
     /// stdout per page.
-    #[cfg(feature = "tesseract")]
+    #[cfg(any(feature = "tesseract", feature = "ppocr"))]
     OcrBatch(PathBuf),
 }
 
@@ -48,6 +48,7 @@ fn main() -> ExitCode {
 
     let mut task = Task::Convert { output: None, images: Images::Embed };
     let mut strategy = ScanStrategy::Full;
+    let mut engine = String::from("tesseract");
     while let Some(flag) = args.next() {
         match flag.as_str() {
             "--structure" => task = Task::Structure,
@@ -93,10 +94,12 @@ fn main() -> ExitCode {
                         Ok(n) => task = Task::Layout(n),
                         Err(_) => return usage_error(),
                     },
-                    #[cfg(feature = "tesseract")]
+                    #[cfg(any(feature = "tesseract", feature = "ppocr"))]
                     ("--ocr-png", image) => task = Task::OcrImage(PathBuf::from(image)),
-                    #[cfg(feature = "tesseract")]
+                    #[cfg(any(feature = "tesseract", feature = "ppocr"))]
                     ("--ocr-batch", list) => task = Task::OcrBatch(PathBuf::from(list)),
+                    #[cfg(any(feature = "tesseract", feature = "ppocr"))]
+                    ("--engine", chosen) => engine = chosen,
                     _ => return usage_error(),
                 }
             }
@@ -110,16 +113,75 @@ fn main() -> ExitCode {
         Task::Structure => print_structure(&path),
         #[cfg(feature = "layout")]
         Task::Layout(page) => print_layout(&path, page),
-        #[cfg(feature = "tesseract")]
-        Task::OcrImage(image) => ocr_image(&image),
-        #[cfg(feature = "tesseract")]
-        Task::OcrBatch(list) => ocr_batch(&list),
+        #[cfg(any(feature = "tesseract", feature = "ppocr"))]
+        Task::OcrImage(image) => ocr_image(&image, &engine),
+        #[cfg(any(feature = "tesseract", feature = "ppocr"))]
+        Task::OcrBatch(list) => ocr_batch(&list, &engine),
     }
 }
 
-#[cfg(feature = "tesseract")]
-fn ocr_batch(list: &Path) -> ExitCode {
-    use pdf_extractor_2_md::ocr::TesseractEngine;
+/// The OCR engine the `--engine` flag names: `tesseract`, or `v6-medium`,
+/// `v6-small`, `v6-tiny` for the PP-OCRv6 tiers. Each is behind its feature;
+/// asking for one that is not compiled in is an error, not a silent fallback.
+#[cfg(any(feature = "tesseract", feature = "ppocr"))]
+enum OcrEngine {
+    #[cfg(feature = "tesseract")]
+    Tesseract(pdf_extractor_2_md::ocr::TesseractEngine),
+    #[cfg(feature = "ppocr")]
+    Paddle(pdf_extractor_2_md::ocr::PaddleEngine),
+}
+
+#[cfg(any(feature = "tesseract", feature = "ppocr"))]
+impl OcrEngine {
+    fn open(name: &str) -> Result<Self, String> {
+        match name {
+            #[cfg(feature = "tesseract")]
+            "tesseract" => pdf_extractor_2_md::ocr::TesseractEngine::new(
+                "ita+eng",
+                PathBuf::from("models/tesseract/tessdata"),
+            )
+            .map(OcrEngine::Tesseract)
+            .map_err(|error| format!("{error:?}")),
+            #[cfg(feature = "ppocr")]
+            "v6-medium" | "v6-small" | "v6-tiny" => {
+                use pdf_extractor_2_md::ocr::{PaddleEngine, PaddleTier};
+                if std::env::var_os("ORT_DYLIB_PATH").is_none() {
+                    std::env::set_var("ORT_DYLIB_PATH", native::onnxruntime_path());
+                }
+                let tier = match name {
+                    "v6-small" => PaddleTier::Small,
+                    "v6-tiny" => PaddleTier::Tiny,
+                    _ => PaddleTier::Medium,
+                };
+                PaddleEngine::new(Path::new("models/paddleocr"), tier)
+                    .map(OcrEngine::Paddle)
+                    .map_err(|error| format!("{error:?}"))
+            }
+            other => Err(format!(
+                "unknown engine {other:?} (this build knows: tesseract, v6-medium, v6-small, v6-tiny)"
+            )),
+        }
+    }
+
+    fn read_page(
+        &mut self,
+        page: &image::RgbImage,
+    ) -> Result<Vec<pdf_extractor_2_md::native::Line>, String> {
+        match self {
+            #[cfg(feature = "tesseract")]
+            OcrEngine::Tesseract(engine) => {
+                engine.read_page(page).map_err(|error| format!("{error:?}"))
+            }
+            #[cfg(feature = "ppocr")]
+            OcrEngine::Paddle(engine) => {
+                engine.read_page(page).map_err(|error| format!("{error:?}"))
+            }
+        }
+    }
+}
+
+#[cfg(any(feature = "tesseract", feature = "ppocr"))]
+fn ocr_batch(list: &Path, engine_name: &str) -> ExitCode {
     use pdf_extractor_2_md::structure::Typography;
     use std::time::Instant;
 
@@ -127,10 +189,10 @@ fn ocr_batch(list: &Path) -> ExitCode {
         eprintln!("cannot read {}", list.display());
         return ExitCode::FAILURE;
     };
-    let engine = match TesseractEngine::new("ita+eng", PathBuf::from("models/tesseract/tessdata")) {
+    let mut engine = match OcrEngine::open(engine_name) {
         Ok(engine) => engine,
         Err(error) => {
-            eprintln!("tesseract unavailable: {error:?}");
+            eprintln!("engine unavailable: {error}");
             return ExitCode::FAILURE;
         }
     };
@@ -149,7 +211,7 @@ fn ocr_batch(list: &Path) -> ExitCode {
             Writer::new(Options { images: Images::Skip, keep_furniture: true }, typography);
         let blocks = assemble::assemble(lines, &[]);
         let markdown = writer.page(&blocks, None);
-        let out = format!("{entry}.tess.md");
+        let out = format!("{entry}.{engine_name}.md");
         if std::fs::write(&out, markdown).is_err() {
             println!("{entry}	ERROR write");
             continue;
@@ -159,19 +221,17 @@ fn ocr_batch(list: &Path) -> ExitCode {
     ExitCode::SUCCESS
 }
 
-/// The OCR pipeline on one raster page: Tesseract reads it, then the same
-/// column detection, assembly and Markdown writer as the native branch.
+/// The OCR pipeline on one raster page: the chosen engine reads it, then the
+/// same column detection, assembly and Markdown writer as the native branch.
 /// `<input>` is ignored in this mode; the image is the input.
-#[cfg(feature = "tesseract")]
-fn ocr_image(image_path: &Path) -> ExitCode {
-    use pdf_extractor_2_md::ocr::TesseractEngine;
+#[cfg(any(feature = "tesseract", feature = "ppocr"))]
+fn ocr_image(image_path: &Path, engine_name: &str) -> ExitCode {
     use pdf_extractor_2_md::structure::Typography;
 
-    let tessdata = PathBuf::from("models/tesseract/tessdata");
-    let engine = match TesseractEngine::new("ita+eng", tessdata) {
+    let mut engine = match OcrEngine::open(engine_name) {
         Ok(engine) => engine,
         Err(error) => {
-            eprintln!("tesseract unavailable: {error:?}");
+            eprintln!("engine unavailable: {error}");
             return ExitCode::FAILURE;
         }
     };
@@ -185,7 +245,7 @@ fn ocr_image(image_path: &Path) -> ExitCode {
     let lines = match engine.read_page(&page) {
         Ok(lines) => lines,
         Err(error) => {
-            eprintln!("ocr failed on {}: {error:?}", image_path.display());
+            eprintln!("ocr failed on {}: {error}", image_path.display());
             return ExitCode::FAILURE;
         }
     };

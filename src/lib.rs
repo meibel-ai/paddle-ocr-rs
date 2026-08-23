@@ -17,7 +17,7 @@ pub mod integrity;
 pub mod markdown;
 pub mod native;
 
-#[cfg(feature = "tesseract")]
+#[cfg(any(feature = "tesseract", feature = "ppocr"))]
 pub mod ocr;
 pub mod region;
 pub mod structure;

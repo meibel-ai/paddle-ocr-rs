@@ -51,6 +51,8 @@ default = []
 layout = ["dep:paddle-ocr-rs"]
 # Ramo OCR con motore Tesseract.
 tesseract = ["dep:tesseract5-rs"]
+# Ramo OCR con motore PP-OCRv6 (stessa dipendenza del layout, feature distinta).
+ppocr = ["dep:paddle-ocr-rs"]
 
 [[bin]]
 name = "pdf2md"
