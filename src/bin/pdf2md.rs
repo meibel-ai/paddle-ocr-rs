@@ -11,6 +11,7 @@ use pdf_extractor_2_md::integrity::{self, ChkDefaced, IntegrityCheck};
 use pdf_extractor_2_md::markdown::{self, Images, Options, Writer, FIGURE_DPI};
 use pdf_extractor_2_md::native;
 use pdf_extractor_2_md::region::Region;
+use pdf_extractor_2_md::structure::Typography;
 
 const USAGE: &str = "\
 usage: pdf2md <input.pdf> [-o out.md] [--images embed|files|skip]
@@ -117,6 +118,14 @@ fn images_mode(mode: &str, input: &Path) -> Option<Images> {
     }
 }
 
+/// Why a page cannot be read natively, if it cannot.
+fn ocr_reason(
+    routing: &DocumentReport,
+    number: u32,
+) -> Option<pdf_extractor_2_md::detect::OcrReason> {
+    routing.pages.iter().find(|page| page.number == number).and_then(|page| page.ocr)
+}
+
 /// Figure regions for the images no region covers.
 ///
 /// The layout model places what it recognises; an image it passes over — a
@@ -190,27 +199,51 @@ fn convert(path: &Path, output: Option<PathBuf>, images: Images) -> ExitCode {
         },
         (images, _) => images,
     };
-    let mut writer = Writer::new(Options { images, keep_furniture: false });
     let mut layout = open_layout_model();
+
+    // Every page's text is read first, because the type size that marks a
+    // heading is a property of the whole document and cannot be known from one
+    // page. Text is cheap — about 17 ms a page — so this pass reads text only
+    // and leaves rendering, which costs thirty times as much, to the second.
+    // A page bound for OCR contributes an empty entry, keeping the two passes
+    // in step by page number.
+    let lines_by_page: Vec<Vec<pdf_extractor_2_md::native::Line>> = rendered
+        .pages()
+        .iter()
+        .enumerate()
+        .map(|(index, page)| match ocr_reason(&routing, index as u32 + 1) {
+            Some(_) => Vec::new(),
+            None => native::text::page_lines(&page).unwrap_or_default(),
+        })
+        .collect();
+    let typography = Typography::of(&lines_by_page, &native::outline::bookmarks(&rendered));
+
+    let wants_figures = !matches!(images, Images::Skip);
+    let mut writer = Writer::new(Options { images, keep_furniture: false }, typography);
     let mut pages = Vec::new();
 
     for (index, page) in rendered.pages().iter().enumerate() {
         let number = index as u32 + 1;
-        // A page the router sent to OCR is not read natively. Saying so in
-        // the document beats leaving a hole in it.
-        if let Some(reason) = routing.pages.iter().find(|p| p.number == number).and_then(|p| p.ocr)
-        {
+        // A page the router sent to OCR is not read natively. Saying so in the
+        // document beats leaving a hole in it.
+        if let Some(reason) = ocr_reason(&routing, number) {
             pages.push(format!(
-                "> ⚠ pagina {number}: da leggere con OCR ({}) — ramo non ancora attivo\n\n",
+                "> ⚠ pagina {number}: da leggere con OCR ({}) — ramo non ancora attivo
+
+",
                 reason.as_str()
             ));
             continue;
         }
-        let lines = native::text::page_lines(&page).unwrap_or_default();
+        let lines = lines_by_page[index].clone();
         if lines.is_empty() {
             continue;
         }
-        let raster = native::render_page(&page, FIGURE_DPI).ok();
+        // Rendering is paid for only when something will read the raster: the
+        // layout model, or a figure that has to be cropped out of it.
+        let raster = (layout_is_open(&layout) || wants_figures)
+            .then(|| native::render_page(&page, FIGURE_DPI).ok())
+            .flatten();
         let mut regions = regions_of(&mut layout, raster.as_ref());
         regions.extend(images_outside(&page, &regions));
         let blocks = assemble::assemble(lines, &regions);
@@ -236,6 +269,16 @@ fn convert(path: &Path, output: Option<PathBuf>, images: Images) -> ExitCode {
 // the work.
 #[cfg(not(feature = "layout"))]
 fn open_layout_model() {}
+
+#[cfg(not(feature = "layout"))]
+fn layout_is_open(_: &()) -> bool {
+    false
+}
+
+#[cfg(feature = "layout")]
+fn layout_is_open(model: &Option<pdf_extractor_2_md::layout::LayoutModel>) -> bool {
+    model.is_some()
+}
 
 #[cfg(not(feature = "layout"))]
 fn regions_of(_: &mut (), _: Option<&native::Raster>) -> Vec<Region> {

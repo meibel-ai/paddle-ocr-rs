@@ -22,11 +22,17 @@ use crate::region::{Region, RegionKind};
 const INSIDE_SHARE: f32 = 0.5;
 
 /// Vertical gap that separates two clusters of orphan lines, as a multiple of
-/// their own median height — never a count of points, so the rule holds at any
-/// type size (`old_project/edito-ocr-v6/src/edito_ocr/order.py:105`).
+/// the height of the lines themselves — never a count of points, so the rule
+/// holds at any type size (`old_project/edito-ocr-v6/src/edito_ocr/order.py:105`).
 const ORPHAN_GAP_Y: f32 = 1.8;
 /// The same horizontally: orphans further apart than this are separate things.
 const ORPHAN_GAP_X: f32 = 3.0;
+
+/// How far two lines' type sizes may differ and still belong together. A
+/// heading and the body under it are set differently on purpose, and joining
+/// them across that difference is how a title ends up carrying a sentence from
+/// the next column.
+const MAX_SIZE_RATIO: f32 = 1.5;
 
 /// Minimum width of the empty corridor that an XY cut may split on.
 const MIN_CORRIDOR: f32 = 8.0;
@@ -114,9 +120,6 @@ fn recover(mut orphans: Vec<Line>) -> Vec<Block> {
     if orphans.is_empty() {
         return Vec::new();
     }
-    let median_height = median(orphans.iter().map(|line| line.bbox.height()));
-    let (gap_y, gap_x) = (ORPHAN_GAP_Y * median_height, ORPHAN_GAP_X * median_height);
-
     // Down the page, then across: the order lines are met in.
     orphans.sort_by(|a, b| {
         b.bbox.top.total_cmp(&a.bbox.top).then(a.bbox.left.total_cmp(&b.bbox.left))
@@ -124,12 +127,7 @@ fn recover(mut orphans: Vec<Line>) -> Vec<Block> {
 
     let mut blocks: Vec<Block> = Vec::new();
     for line in orphans {
-        let joins = blocks.last().is_some_and(|block| {
-            let vertical = block.bbox.bottom - line.bbox.top;
-            let horizontal =
-                (line.bbox.left - block.bbox.right).max(block.bbox.left - line.bbox.right);
-            vertical <= gap_y && horizontal <= gap_x
-        });
+        let joins = blocks.last().is_some_and(|block| belongs_together(block, &line));
         match (joins, blocks.last_mut()) {
             (true, Some(block)) => {
                 block.bbox = block.bbox.union(&line.bbox);
@@ -147,13 +145,36 @@ fn recover(mut orphans: Vec<Line>) -> Vec<Block> {
     blocks
 }
 
-fn median(values: impl Iterator<Item = f32>) -> f32 {
-    let mut values: Vec<f32> = values.collect();
-    if values.is_empty() {
-        return 0.0;
+/// Whether a line continues the block above it.
+///
+/// The gaps are measured against the height of *these* lines, not the page's
+/// median: a 20 pt title sets its own lines two and a half times further apart
+/// than 9 pt body text, and against a page median it would never join itself —
+/// which is how one magazine headline came out as four separate headings.
+fn belongs_together(block: &Block, line: &Line) -> bool {
+    let Some(previous) = block.lines.last() else { return false };
+    let scale = previous.bbox.height().max(line.bbox.height());
+    if scale <= 0.0 || size_ratio(previous, line) > MAX_SIZE_RATIO {
+        return false;
     }
-    values.sort_by(f32::total_cmp);
-    values[values.len() / 2]
+    let vertical = previous.bbox.bottom - line.bbox.top;
+    let horizontal = (line.bbox.left - block.bbox.right).max(block.bbox.left - line.bbox.right);
+    vertical <= ORPHAN_GAP_Y * scale && horizontal <= ORPHAN_GAP_X * scale
+}
+
+fn size_ratio(a: &Line, b: &Line) -> f32 {
+    // A line always knows its type size in practice; where it does not, its
+    // box height says the same thing well enough to compare two lines.
+    let size_of = |line: &Line| match line.size() {
+        size if size > 0.0 => size,
+        _ => line.bbox.height(),
+    };
+    let (first, second) = (size_of(a), size_of(b));
+    let (small, large) = (first.min(second), first.max(second));
+    if small <= 0.0 {
+        return 1.0;
+    }
+    large / small
 }
 
 /// Put the blocks in reading order.

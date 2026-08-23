@@ -18,6 +18,7 @@ use base64::Engine as _;
 use crate::assemble::Block;
 use crate::native::Raster;
 use crate::region::RegionKind;
+use crate::structure::Typography;
 
 /// Resolution figures are cropped at. Enough to stay readable when a reader
 /// opens the Markdown, without turning every figure into a megabyte.
@@ -57,12 +58,13 @@ pub struct Options {
 /// the whole document, and because the file mode writes as it goes.
 pub struct Writer {
     options: Options,
+    typography: Typography,
     figures: usize,
 }
 
 impl Writer {
-    pub fn new(options: Options) -> Self {
-        Writer { options, figures: 0 }
+    pub fn new(options: Options, typography: Typography) -> Self {
+        Writer { options, typography, figures: 0 }
     }
 
     /// The Markdown of one page. `raster` is what figures are cropped from;
@@ -76,13 +78,23 @@ impl Writer {
             let piece = match block.kind {
                 RegionKind::Figure => self.figure(block, raster),
                 RegionKind::Title => heading(1, &paragraph(block)),
-                RegionKind::Heading => heading(2, &paragraph(block)),
+                // The model says *that* it is a heading; the type says how
+                // deep. Where neither knows, one level below the title.
+                RegionKind::Heading => {
+                    heading(self.typography.level_of(block).unwrap_or(2).into(), &paragraph(block))
+                }
                 RegionKind::Caption => format!("*{}*", paragraph(block)),
                 // A table still reads as its lines until the grid is built
                 // from the rules the page draws (Phase 3, next step).
                 RegionKind::Table => block.text(),
                 RegionKind::Formula => block.text(),
-                _ => paragraph(block),
+                // Body text that reads as a heading: the only structure the
+                // geometric path has, and a safety net where the model missed
+                // one.
+                _ => match self.typography.level_of(block) {
+                    Some(level) => heading(level.into(), &paragraph(block)),
+                    None => paragraph(block),
+                },
             };
             if !piece.trim().is_empty() {
                 out.push_str(piece.trim_end());
@@ -226,6 +238,11 @@ mod tests {
     use crate::geometry::Rect;
     use crate::native::Line;
 
+    /// A writer with no typography to consult: only the model's own kinds.
+    fn plain() -> Writer {
+        Writer::new(Options::default(), Typography::of(&[], &[]))
+    }
+
     fn block(kind: RegionKind, lines: &[&str]) -> Block {
         Block {
             kind,
@@ -285,7 +302,7 @@ mod tests {
 
     #[test]
     fn headings_and_captions_take_their_markers() {
-        let mut writer = Writer::new(Options::default());
+        let mut writer = Writer::new(Options::default(), Typography::of(&[], &[]));
         let out = writer.page(
             &[
                 block(RegionKind::Title, &["Titolo del documento"]),
@@ -302,22 +319,22 @@ mod tests {
     #[test]
     fn furniture_is_dropped_unless_it_is_asked_for() {
         let running_head = [block(RegionKind::Furniture, &["GU L del 18.11.2024"])];
-        assert!(Writer::new(Options::default()).page(&running_head, None).trim().is_empty());
+        assert!(plain().page(&running_head, None).trim().is_empty());
 
         let options = Options { keep_furniture: true, ..Options::default() };
-        assert!(Writer::new(options).page(&running_head, None).contains("GU L"));
+        assert!(Writer::new(options, Typography::of(&[], &[])).page(&running_head, None).contains("GU L"));
     }
 
     #[test]
     fn a_figure_without_a_raster_still_says_it_was_there() {
-        let mut writer = Writer::new(Options::default());
+        let mut writer = Writer::new(Options::default(), Typography::of(&[], &[]));
         let out = writer.page(&[block(RegionKind::Figure, &["Grafico delle vendite"])], None);
         assert_eq!(out.trim(), "*[Grafico delle vendite]*");
     }
 
     #[test]
     fn figures_are_numbered_across_the_document() {
-        let mut writer = Writer::new(Options { images: Images::Skip, ..Options::default() });
+        let mut writer = Writer::new(Options { images: Images::Skip, ..Options::default() }, Typography::of(&[], &[]));
         writer.page(&[block(RegionKind::Figure, &[""])], None);
         let second = writer.page(&[block(RegionKind::Figure, &[""])], None);
         assert!(second.contains("figure 2"), "the count does not restart on a new page");

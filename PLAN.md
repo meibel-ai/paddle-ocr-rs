@@ -208,6 +208,34 @@ a fondo. Le perdite residue **non sono contenuto**:
 il trattino ASCII, mentre le colonne del Sole 24 Ore usano un glifo mappato su
 un carattere di controllo — precisione da 92,7% a 96,1% su quel documento.
 
+**Percorso senza LayoutV3 migliorato (2026-08-23)** — `src/structure.rs`, più
+rasterizzazione pigra nel CLI e clustering degli orfani rivisto:
+- **rasterizzazione pigra**: la pagina si rende solo se qualcuno leggerà il
+  raster (modello di layout, o una figura da ritagliare). Corpus da **18 s a
+  7 s** (2,5×), qualità invariata;
+- **heading da tipografia e outline** (`Typography`): corpo = la dimensione in
+  cui è composta la maggioranza delle *parole*; heading = blocco corto
+  (≤3 righe, ≤15 parole) a ≥1,2× il corpo, o bold a ≥1,05×; livello dal rango
+  fra i tier. I tier sono le dimensioni **più frequenti**, non le più grandi:
+  una rivista usa una dozzina di corpi display quasi tutti una volta sola, e
+  prendere i più grandi faceva collassare ogni heading ricorrente su un unico
+  livello. L'outline vince sempre, e aggancia anche quando la pagina stampa la
+  numerazione che il bookmark non ha (`3 Problem Setup` ↔ `Problem Setup`).
+  Da **0 a 768 heading** sul corpus;
+- **clustering degli orfani sull'altezza delle righe stesse**, non sulla
+  mediana della pagina, più un vincolo di somiglianza di corpo (≤1,5×): con la
+  mediana un titolo da 20 pt non si aggregava mai con sé stesso e usciva
+  spezzato in quattro heading, o incollato al corpo della colonna accanto.
+
+Misura finale del percorso geometrico contro quello con LayoutV3: contenuto
+equivalente (recall 98,3% contro 97,2% — la differenza è la furniture che solo
+il modello sa scartare), **ordine 93,4% contro 95,7%**, con lo scarto tutto
+concentrato sul multicolonna. Limite noto e non risolto: su una rivista il
+percorso geometrico continua a mescolare titolo e colonna adiacente quando il
+gutter è più stretto di 3 em. Una regola sul cambio di corpo è stata provata e
+**rimossa**: cambiava cinque documenti senza spostare alcuna metrica e senza
+risolvere il caso che l'aveva motivata.
+
 Resta da fare in Fase 3: heading multilivello (bookmark + tier tipografici),
 tabelle dalle rules, liste e codice, postprocess (numeri di pagina, URL).
 - **Struttura e ordine di lettura da PP-DocLayoutV3** (indicazione dell'autore,

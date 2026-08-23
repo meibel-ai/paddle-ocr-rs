@@ -16,3 +16,4 @@ pub mod integrity;
 pub mod markdown;
 pub mod native;
 pub mod region;
+pub mod structure;
