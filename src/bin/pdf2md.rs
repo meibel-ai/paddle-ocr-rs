@@ -9,6 +9,7 @@ use pdf_extractor_2_md::assemble;
 use pdf_extractor_2_md::detect::{self, DocumentReport, ScanStrategy};
 use pdf_extractor_2_md::integrity::{self, ChkDefaced, IntegrityCheck};
 use pdf_extractor_2_md::markdown::{self, Images, Options, Writer, FIGURE_DPI};
+use pdf_extractor_2_md::policy;
 use pdf_extractor_2_md::native;
 use pdf_extractor_2_md::region::Region;
 use pdf_extractor_2_md::structure::Typography;
@@ -49,6 +50,9 @@ fn main() -> ExitCode {
     let mut task = Task::Convert { output: None, images: Images::Embed };
     let mut strategy = ScanStrategy::Full;
     let mut engine = String::from("tesseract");
+    // `--engine` on a conversion selects the OCR engine for the scanned
+    // pages; left out, the policy decides.
+    let mut requested_engine: Option<String> = None;
     while let Some(flag) = args.next() {
         match flag.as_str() {
             "--structure" => task = Task::Structure,
@@ -99,7 +103,10 @@ fn main() -> ExitCode {
                     #[cfg(any(feature = "tesseract", feature = "ppocr"))]
                     ("--ocr-batch", list) => task = Task::OcrBatch(PathBuf::from(list)),
                     #[cfg(any(feature = "tesseract", feature = "ppocr"))]
-                    ("--engine", chosen) => engine = chosen,
+                    ("--engine", chosen) => {
+                        requested_engine = Some(chosen.clone());
+                        engine = chosen;
+                    }
                     _ => return usage_error(),
                 }
             }
@@ -107,7 +114,9 @@ fn main() -> ExitCode {
     }
 
     match task {
-        Task::Convert { output, images } => convert(&path, output, images),
+        Task::Convert { output, images } => {
+            convert(&path, output, images, requested_engine.as_deref())
+        }
         Task::Report(strategy) => report(&path, strategy),
         Task::Lines(page) => print_lines(&path, page),
         Task::Structure => print_structure(&path),
@@ -119,6 +128,13 @@ fn main() -> ExitCode {
         Task::OcrBatch(list) => ocr_batch(&list, &engine),
     }
 }
+
+/// Resolution scanned pages are rasterised at for OCR. 200 DPI: measured in
+/// `old_project/edito-ocr-v6` (`pipeline.py:497-522`), a 599 dpi scan read at
+/// 200 gives the same 337 words as at 599 and costs 70 % less; below 150 a
+/// line starts to go missing.
+#[cfg(any(feature = "tesseract", feature = "ppocr"))]
+const OCR_DPI: f32 = 200.0;
 
 /// The OCR engine the `--engine` flag names: `tesseract`, or `v6-medium`,
 /// `v6-small`, `v6-tiny` for the PP-OCRv6 tiers. Each is behind its feature;
@@ -181,6 +197,19 @@ impl OcrEngine {
                 "unknown engine {other:?} (this build knows: tesseract, v6-medium, v6-small, v6-tiny, v6-small+tess)"
             )),
         }
+    }
+
+    /// The first engine of the policy that actually opens, with the reason
+    /// each refusal gave — a document read by the parachute must say so.
+    fn open_by_policy(requested: Option<&str>) -> Result<(Self, String), Vec<String>> {
+        let mut refusals = Vec::new();
+        for name in policy::candidates(requested) {
+            match Self::open(&name) {
+                Ok(engine) => return Ok((engine, name)),
+                Err(error) => refusals.push(format!("{name}: {error}")),
+            }
+        }
+        Err(refusals)
     }
 
     fn read_page(
@@ -386,7 +415,7 @@ fn slug(name: &str) -> String {
 
 /// The conversion itself: route the pages, read the ones the native branch
 /// owns, and write what came out.
-fn convert(path: &Path, output: Option<PathBuf>, images: Images) -> ExitCode {
+fn convert(path: &Path, output: Option<PathBuf>, images: Images, engine: Option<&str>) -> ExitCode {
     let Ok(document) = lopdf::Document::load(path) else {
         eprintln!("cannot open {}", path.display());
         return ExitCode::FAILURE;
@@ -435,18 +464,15 @@ fn convert(path: &Path, output: Option<PathBuf>, images: Images) -> ExitCode {
     let wants_figures = !matches!(images, Images::Skip);
     let mut writer = Writer::new(Options { images, keep_furniture: false }, typography);
     let mut pages = Vec::new();
+    // The OCR engine is opened only if a page actually needs it: loading a
+    // recogniser costs seconds, and most documents never route a page.
+    let mut ocr = OcrBranch::new(engine, routing.pages_needing_ocr().count());
 
     for (index, page) in rendered.pages().iter().enumerate() {
         let number = index as u32 + 1;
-        // A page the router sent to OCR is not read natively. Saying so in the
-        // document beats leaving a hole in it.
+        // A page the router sent to OCR is read from its pixels instead.
         if let Some(reason) = ocr_reason(&routing, number) {
-            pages.push(format!(
-                "> ⚠ pagina {number}: da leggere con OCR ({}) — ramo non ancora attivo
-
-",
-                reason.as_str()
-            ));
+            pages.push(ocr_page(&page, number, reason, &mut ocr, &mut writer));
             continue;
         }
         let lines = lines_by_page[index].clone();
@@ -746,4 +772,134 @@ fn print_integrity(report: &chk_defaced::finding::Report, routed: usize) {
     if assessment.hidden_text {
         println!("  hidden text present — it will be carried into the output marked, not dropped");
     }
+}
+
+
+/// The OCR side of a conversion: opened on first use, so a document with no
+/// scanned page never pays for a recogniser.
+#[cfg(any(feature = "tesseract", feature = "ppocr"))]
+struct OcrBranch {
+    requested: Option<String>,
+    needed: usize,
+    engine: Option<(OcrEngine, String)>,
+    failed: bool,
+}
+
+#[cfg(any(feature = "tesseract", feature = "ppocr"))]
+impl OcrBranch {
+    fn new(requested: Option<&str>, needed: usize) -> Self {
+        OcrBranch {
+            requested: requested.map(str::to_string),
+            needed,
+            engine: None,
+            failed: false,
+        }
+    }
+
+    /// The engine, opening it the first time it is asked for.
+    fn engine(&mut self) -> Option<(&mut OcrEngine, &str)> {
+        if self.engine.is_none() && !self.failed && self.needed > 0 {
+            match OcrEngine::open_by_policy(self.requested.as_deref()) {
+                Ok((engine, name)) => {
+                    eprintln!("ramo OCR: {name} ({} pagina/e)", self.needed);
+                    self.engine = Some((engine, name));
+                }
+                Err(refusals) => {
+                    self.failed = true;
+                    eprintln!("ramo OCR non disponibile: {}", refusals.join("; "));
+                }
+            }
+        }
+        self.engine.as_mut().map(|(engine, name)| (engine, name.as_str()))
+    }
+}
+
+/// Read one routed page from its pixels and write its Markdown.
+///
+/// Nothing is ever silently dropped: a page the OCR branch cannot read keeps
+/// the warning it used to get, naming the reason.
+#[cfg(any(feature = "tesseract", feature = "ppocr"))]
+fn ocr_page(
+    page: &pdfium_render::prelude::PdfPage,
+    number: u32,
+    reason: pdf_extractor_2_md::detect::OcrReason,
+    branch: &mut OcrBranch,
+    writer: &mut Writer,
+) -> String {
+    let unread = |detail: &str| {
+        format!("> ⚠ pagina {number}: da leggere con OCR ({}) — {detail}\n\n", reason.as_str())
+    };
+    let Ok(raster) = native::render_page(page, OCR_DPI) else {
+        return unread("rasterizzazione fallita");
+    };
+    let Some((engine, name)) = branch.engine() else {
+        return unread("nessun motore disponibile");
+    };
+    let lines = match engine.read_page(&raster.image) {
+        Ok(lines) if !lines.is_empty() => lines,
+        Ok(_) => return unread("nessun testo riconosciuto"),
+        Err(error) => return unread(&format!("lettura fallita: {error}")),
+    };
+    // The engine works in raster pixels; the rest of the pipeline in points.
+    let scale = OCR_DPI / 72.0;
+    let lines = lines
+        .into_iter()
+        .map(|line| scale_line(line, scale))
+        .collect::<Vec<_>>();
+    let blocks = assemble::assemble(lines, &[]);
+    let name = name.to_string();
+    format!("<!-- pagina {number}: OCR {name} -->\n\n{}", writer.page(&blocks, None))
+}
+
+/// Bring a line from raster pixels into the page's points.
+#[cfg(any(feature = "tesseract", feature = "ppocr"))]
+fn scale_line(
+    line: pdf_extractor_2_md::native::Line,
+    scale: f32,
+) -> pdf_extractor_2_md::native::Line {
+    use pdf_extractor_2_md::geometry::Rect;
+    let shrink = |bbox: Rect| {
+        Rect::new(bbox.left / scale, bbox.bottom / scale, bbox.right / scale, bbox.top / scale)
+    };
+    pdf_extractor_2_md::native::Line {
+        bbox: shrink(line.bbox),
+        words: line
+            .words
+            .into_iter()
+            .map(|word| pdf_extractor_2_md::native::Word {
+                bbox: shrink(word.bbox),
+                style: pdf_extractor_2_md::native::Style {
+                    size: word.style.size / scale,
+                    ..word.style
+                },
+                ..word
+            })
+            .collect(),
+    }
+}
+
+/// Without an OCR feature the branch does not exist and a routed page keeps
+/// its warning, which is what the document should say.
+#[cfg(not(any(feature = "tesseract", feature = "ppocr")))]
+struct OcrBranch;
+
+#[cfg(not(any(feature = "tesseract", feature = "ppocr")))]
+impl OcrBranch {
+    fn new(_requested: Option<&str>, _needed: usize) -> Self {
+        OcrBranch
+    }
+}
+
+#[cfg(not(any(feature = "tesseract", feature = "ppocr")))]
+fn ocr_page(
+    _page: &pdfium_render::prelude::PdfPage,
+    number: u32,
+    reason: pdf_extractor_2_md::detect::OcrReason,
+    _branch: &mut OcrBranch,
+    _writer: &mut Writer,
+) -> String {
+    format!(
+        "> ⚠ pagina {number}: da leggere con OCR ({}) — build senza ramo OCR\n\n",
+        reason.as_str()
+    )
 }

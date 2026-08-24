@@ -18,6 +18,7 @@ pub mod integrity;
 pub mod lexicon;
 pub mod markdown;
 pub mod native;
+pub mod policy;
 
 #[cfg(any(feature = "tesseract", feature = "ppocr"))]
 pub mod ocr;

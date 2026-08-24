@@ -66,7 +66,7 @@ completa o interrotta. Output attesi nello scratchpad:
   valutare un tetto (se >N% delle parole è sospetto, saltare l'arbitrato —
   la pagina va a preprocessing, non a riletture).
 
-## B. Policy di switch automatica (Fase 4, da scrivere)
+## B. Policy di switch automatica — ✅ FATTA (2026-08-24, `src/policy.rs`)
 
 Oggi `--engine` è manuale. Scrivere `src/policy.rs`:
 - default **v6-small**; `v6-medium` VIETATO finché il difetto C1 non è
@@ -78,15 +78,14 @@ Oggi `--engine` è manuale. Scrivere `src/policy.rs`:
 - Test: forzare il fallimento di ort (ORT_DYLIB_PATH invalido) e verificare
   che la pipeline degradi a Tesseract con un avviso, non un errore.
 
-## C. Integrazione OCR nella conversione PDF (manca il ponte!)
+## C. Integrazione OCR nella conversione PDF — ✅ PONTE FATTO (2026-08-24)
 
-`pdf2md doc.pdf -o out.md` oggi emette un AVVISO per le pagine instradate a
-OCR — il ramo OCR esiste ma non è collegato alla conversione dei PDF.
-Da fare in `src/bin/pdf2md.rs::convert`:
-1. per le pagine con `ocr: Some(reason)`: rasterizzare a 200 DPI
-   (`native::render_page`), passare all'engine della policy (B), assemblare
-   con le stesse colonne/blocchi, scrivere nel MD con provenienza
-   (`<!-- pagina N: OCR v6-small -->`).
+`pdf2md doc.pdf -o out.md` ora legge davvero le pagine instradate: engine
+aperto pigramente dalla policy, raster a 200 DPI, stesse colonne/blocchi,
+provenienza nel MD (`<!-- pagina N: OCR v6-small -->`). Verificato su una
+scansione vera (`test/scansioni/1783964703313.pdf`, 2 pagine): prima due
+avvisi, ora testo corretto. **Resta da fare**:
+1. ~~raster + engine + assemblaggio~~ fatto.
 2. Misura: convertire `test/scansioni/*.pdf` e le 14 pagine garbled di
    `2025_10_24` → prima erano avvisi, ora testo.
    **Accettazione**: `test/scansioni/1783964703313.pdf` produce MD con testo
