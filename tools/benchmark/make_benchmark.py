@@ -164,7 +164,10 @@ def process_pdf(pdf_path: Path, out_root: Path, levels: list[int]) -> int:
 
         # Ground truth: testo nativo, in "reading order" di pdfium.
         text = page.get_textpage().get_text_range()
-        (page_dir / "verita.txt").write_text(text, encoding="utf-8")
+        # `newline="\n"` obbligatorio: pdfium termina le righe con \r\n, e la
+        # traduzione automatica di Python trasformerebbe quel \n in \r\n
+        # lasciando \r\r\n — cioè una riga vuota dopo ogni riga della verità.
+        (page_dir / "verita.txt").write_text(text, encoding="utf-8", newline="\n")
 
         # Raster a 200 DPI.
         bitmap = page.render(scale=DPI / 72)
