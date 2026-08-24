@@ -30,6 +30,17 @@ L1 lieve (rotazione 0,3-1° **verificata empiricamente** + JPEG q70-85),
 L2 fotocopia stanca (ink bleed, illuminazione, texture), L3 fax (halftone,
 binarizzazione, pieghe). Verità identica e allineata per costruzione.
 
+**Limite noto della verità** (2026-08-24): il testo grezzo di pdfium contiene
+gli spazi che *pdfium stesso inventa* dove giudica due glifi lontani per il
+loro font. Su una riga spaziata li mette quasi ovunque, e la verità registra
+`C O MM ISS I O NE` invece di `COMMISSIONE`. Dove la nostra pipeline
+ricompone correttamente la parola, la metrica **la conta come errore**: sul
+solo INNOVA_JUS (copertina interamente spaziata, 1.059 frammenti di questo
+tipo) la ricomposizione costa −4,5 di recall pur essendo un miglioramento
+netto. Le medie qui sotto restano quelle misurate prima della correzione;
+i numeri dopo la correzione sono in §3.1, con il conteggio dei frammenti
+accanto, perché la verità non è ricostruibile senza rifare l'estrazione.
+
 **Metriche** (le stesse ovunque):
 
 - **recall / precisione** sulle parole, a multiset;
@@ -79,6 +90,48 @@ Letture:
 - **2025_10_24** è basso per entrambi i nostri percorsi per una ragione non di
   layout: 14 pagine instradate a OCR dai finding di chk_defaced (3 sostituzioni
   non-legatura, punto aperto dell'autore) — nel MD c'è l'avviso, non il testo.
+
+### 3.1 Spazi inventati da pdfium — correzione del 2026-08-24
+
+Segnalazione dell'autore su `2025_10_24` pagina 1: `COMMISSIONE DI STUDIO
+CNDCEC` usciva come `C O MM ISS I O NE D I ST UDI O CN DCEC`. La causa non era
+nostra: quegli spazi **non esistono nel PDF**, li inserisce pdfium dove giudica
+due glifi lontani per il loro font. Sulla riga in questione i glifi distano
+0,10 em l'uno dall'altro e pdfium mette uno spazio nella maggior parte di quei
+vuoti — ma non in tutti, e quelli che sceglie (0,103-0,112 em) sono
+indistinguibili da quelli che salta (0,090-0,100 em).
+
+Si riconoscono dalla larghezza: **lo spazio disegnato dal produttore misura
+2,02 pt, quello inventato 0,00**. Ignorarli tutti, però, rompe i PDF LaTeX, che
+non disegnano mai uno spazio: in ROPOLL gli spazi inventati sono l'unico
+confine di parola, e la geometria da sola non basta perché la `f` sborda dalla
+propria advance e lascia `of` a 0,157 em da `LLM` — sotto `WORD_GAP_EM`. La
+prima versione della correzione produceva infatti `ofLLM` e
+`ReferenceProtocol,Rubric,andParser` (−6,2 di recall su ROPOLL: regressione
+vera, non artefatto).
+
+Regola adottata (`native::text::hints_are_word_breaks`): **lo spazio inventato
+si ascolta quando i vuoti in cui sta spiccano sulla spaziatura ordinaria della
+riga**, e si ignora quando ci si confonde. Mediane, così un vuoto largo in una
+riga fitta non decide da solo; soglia `HINT_MIN_EXCESS_EM` = mezzo `WORD_GAP_EM`
+(misure: ROPOLL 0,31 contro 0,00 → ascoltato; titolo spaziato 0,105 contro
+0,098 → ignorato; niente cade in mezzo). Caso a parte: una pagina di
+`ag 434_449318` riporta corpo carattere 0, quindi non c'è nessun em in cui
+misurare — lì gli spazi di pdfium sono l'unico segnale e si ascoltano sempre
+(senza questa clausola due celle si fondevano in `2024/2853Disposizioni`).
+
+Effetto sul corpus, misurato rieseguendo i 16 documenti (recall/prec/ordine):
+
+| documento | prima | dopo | lettura |
+|---|---|---|---|
+| INNOVA_JUS | 100 / 100 / 99,0 | 95,5 / 99,2 / 94,9 | **miglioramento**: guadagna `AVVERTENZA METODOLOGICA`, `L'ALFABETIZZAZIONE`, `GOVERNANCE`…, perde solo frammenti (`AC`, `AG`, `OVA`, `ST`, `TÀ`). Lo scarto è l'artefatto della verità (1.059 frammenti) |
+| ROPOLL | 96,1 / 96,4 / 90,6 | 96,0 / 96,4 / 90,7 | 4 etichette di assi in figura a 3,3 pt restano fuse (`SmallMixed`): limite accettato |
+| altri 14 | — | invariati | nessuna regressione |
+
+Verifica diretta su `2025_10_24` pagina 1: tutte e 18 le righe corrette
+(`AREE DI DELEGA CNDCEC`, `CONSIGLIERE DELEGATO`, `Fabrizio Escheri`,
+`24 OTTOBRE 2025`, `Intelligenza artificiale e bilancio`). Sonda usata per la
+diagnosi: `cargo run --example chars -- file.pdf <pagina> "<testo>"`.
 
 ### Errori ricorrenti osservati (nativo)
 

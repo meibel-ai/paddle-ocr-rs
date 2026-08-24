@@ -19,7 +19,11 @@ test_output
 old_project/*
 !old_project/paddle-ocr-rs/
 # DLL runtime per architettura (58 MB): come i modelli, stanno fuori dal repo.
-native/
+# Barra iniziale obbligatoria: senza, la regola prende anche src/native/,
+# e i sorgenti del ramo nativo restano fuori dal repo senza dirlo.
+/native/
 # Sottoprodotti degli strumenti di benchmark.
 augraphy_cache/
 benchmark-run.log
+# Target alternativo, per compilare mentre una corsa tiene occupato target/.
+target-fix/
