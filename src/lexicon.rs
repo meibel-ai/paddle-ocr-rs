@@ -8,8 +8,12 @@
 //! measured for hunspell/wordfreq (`lessico.py`), with the rank playing
 //! wordfreq's part.
 //!
-//! The hunspell dictionaries stay out for now: for Italian and German only
-//! GPL ones exist (quarantined in `models/hunspell-gpl/`, author's call).
+//! For Italian and German, where hunspell exists only under GPL, membership
+//! comes instead from full inflected-form lexica under Creative Commons:
+//! `models/morph/ita.forms` from Morph-it! (Baroni & Zanchetta, dual
+//! CC BY-SA 2.0 / GPL — the CC grant is used) and `models/morph/deu.forms`
+//! from DEMorphy's dictionary (CC BY-SA 4.0). They only answer *existence*;
+//! frequency and language detection stay with the ranked wordlists.
 
 use std::collections::HashMap;
 use std::path::Path;
@@ -56,19 +60,32 @@ impl Lexicon {
         Lexicon { lists }
     }
 
-    /// Load every available wordlist from a directory. A missing language is
+    /// Load every available wordlist from a directory, plus any inflected-form
+    /// list beside it (`<dir>/../morph/<lang>.forms`). A missing language is
     /// skipped, not fatal: the arbiter simply cannot verify that language.
     pub fn load(dir: &Path) -> Self {
+        let morph = dir.parent().map(|parent| parent.join("morph"));
         let mut lists = HashMap::new();
         for language in LANGUAGES {
             let file = dir.join(format!("{language}.wordlist"));
             let Ok(text) = std::fs::read_to_string(&file) else { continue };
-            let words = text
+            let mut words: HashMap<String, u32> = text
                 .lines()
                 .enumerate()
                 .filter(|(_, word)| !word.trim().is_empty())
                 .map(|(rank, word)| (word.trim().to_lowercase(), rank as u32))
                 .collect();
+            // The forms extend membership only: their rank is out of the
+            // frequency window, so language detection stays with the ranked
+            // wordlist and cannot be diluted by two million rare forms.
+            if let Some(morph) = &morph {
+                if let Ok(forms) = std::fs::read_to_string(morph.join(format!("{language}.forms")))
+                {
+                    for form in forms.lines().map(str::trim).filter(|form| !form.is_empty()) {
+                        words.entry(form.to_lowercase()).or_insert(u32::MAX);
+                    }
+                }
+            }
             lists.insert(language, Wordlist { words });
         }
         Lexicon { lists }

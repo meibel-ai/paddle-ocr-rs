@@ -28,8 +28,32 @@ prodotto distribuito on-premise la questione si riapre.
 | `it_IT.*`  | GPL-3.0        |
 | `de_DE.*`  | GPL-2/GPL-3 (variante frami) |
 
-Alternativa valutata e scartata: morph-it! (lessico full-form italiano) ha
-licenza ambigua (fonti contrastanti CC-BY-SA 2.0 / GPL / LGPL).
+## morph/ — la risposta per italiano e tedesco: lessici full-form CC (2026-08-24)
+
+La ricerca approfondita ha sciolto il nodo: esistono lessici di forme flesse
+**non-GPL** per entrambe le lingue, ed è confermato che morph-it è
+**dual-licensed** (si sceglie il ramo Creative Commons).
+
+| file | forme | fonte | licenza scelta |
+|---|---|---|---|
+| `ita.forms` | 404.639 | Morph-it! 0.48 (Baroni & Zanchetta, Unibo) | **CC BY-SA 2.0** (dual con GPL2+: si usa il ramo CC) |
+| `deu.forms` | 1.933.138 | DEMorphy `german-morph-dictionaries` (DuyguA) | **CC BY-SA 4.0** |
+| `morph-it_048_utf8.txt` | sorgente | mirror github giodegas/morphit-lemmatizer | come sopra |
+
+Correlato: `languagetool-org/german-pos-dict` (la stessa genealogia Morphy) è
+anch'esso CC BY-SA 4.0, ma distribuisce solo binari Morfologik — DEMorphy dà
+il testo in chiaro, per questo è la fonte scelta.
+
+Divisione dei compiti nel `Lexicon` (`src/lexicon.rs`): i `.forms` rispondono
+solo all'**esistenza** (entrano con rango infinito), le `wordlists/` ordinate
+per frequenza restano l'unica fonte del **rilevamento lingua** — così due
+milioni di forme rare non diluiscono la statistica. È la stessa separazione
+hunspell/wordfreq che edito-ocr-v6 aveva misurato.
+
+Nota CC BY-SA: attribuzione + share-alike valgono sui *dati* se ridistribuiti
+(anche modificati); non impongono nulla al codice che li consulta. Per un
+prodotto on-premise è una condizione molto più leggera della GPL-3 dei
+dizionari hunspell it/de, che restano in quarantena.
 
 ## wordlists/ — l'ALTERNATIVA NON-GPL: Apache-2.0
 
