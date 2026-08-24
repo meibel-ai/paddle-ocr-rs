@@ -365,6 +365,28 @@ l'halftone del fax non maschera la stima. Le pagine deteriorate SONO inclinate.
 - Invariante: il reading order riordina, non filtra (warning se il conteggio
   righe cambia). Nessuno scarto silenzioso.
 
+### Fase 4b — Arbitrato: fallback automatico a Tesseract sulle parole (2026-08-24)
+
+**Cose da correggere/completare prima della policy** (elenco verificato):
+1. il motore Paddle usava `detect()` senza word box: servono i **WordBox veri**
+   (`detect_with_options` + `return_word_box: true`) — bbox dai timestep CTC e
+   `score` per parola; la distribuzione proporzionale non basta per ricroppare;
+2. **oracolo lessicale in Rust**: caricare le wordlist Apache
+   (`models/wordlists/*.wordlist`, 6 lingue, ordinate per frequenza) — le
+   hunspell restano per dopo (it/de solo GPL, in quarantena);
+3. **lingua di pagina**: dal rango di frequenza nelle wordlist (sostituto
+   dello zipf di wordfreq di v6);
+4. **cache Tesseract per lingua**: l'engine fissa la lingua all'init; il PSM
+   invece si cambia gratis (`set_psm`) → un engine per lingua, PSM 7 sui crop;
+5. **ricrop ad alta risoluzione**: dal raster della pagina, bbox parola con
+   margine e ingrandimento ×2 (v6: `arbitrate.py`, crop ×2);
+6. **regole di sicurezza di v6 da replicare**: parole ≥4 lettere; token con
+   cifre MAI corretti (solo contati come da verificare); sostituzione solo se
+   la lettura Tesseract è nel lessico, quella Paddle no, similarità ≥0,6 e
+   confidenza Tesseract ≥65; il tutto sotto una soglia di score Paddle;
+7. non riguarda la policy ma resta aperto: il difetto di **v6-medium** sui
+   crop inclinati (la policy usa small).
+
 ### Fase 5 — Fusione e Mixed  (rif: pdf-inspector `vision/fusion.rs`)
 - Per pagina: overlap di token tra nativo e OCR, scelta adattiva, inserimento
   dei soli frammenti novel; provenienza (`PageContentSource`) nel risultato.

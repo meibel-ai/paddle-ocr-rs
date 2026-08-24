@@ -13,7 +13,9 @@ pub mod geometry;
 #[cfg(feature = "layout")]
 pub mod layout;
 
+pub mod arbiter;
 pub mod integrity;
+pub mod lexicon;
 pub mod markdown;
 pub mod native;
 

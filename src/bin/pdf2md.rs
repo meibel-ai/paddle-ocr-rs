@@ -129,6 +129,9 @@ enum OcrEngine {
     Tesseract(pdf_extractor_2_md::ocr::TesseractEngine),
     #[cfg(feature = "ppocr")]
     Paddle(pdf_extractor_2_md::ocr::PaddleEngine),
+    /// PP-OCRv6 small with the word-level Tesseract fallback (the arbiter).
+    #[cfg(all(feature = "ppocr", feature = "tesseract"))]
+    Arbitrated(pdf_extractor_2_md::ocr::ArbitratedPaddle, pdf_extractor_2_md::arbiter::Outcome),
 }
 
 #[cfg(any(feature = "tesseract", feature = "ppocr"))]
@@ -142,6 +145,23 @@ impl OcrEngine {
             )
             .map(OcrEngine::Tesseract)
             .map_err(|error| format!("{error:?}")),
+            #[cfg(all(feature = "ppocr", feature = "tesseract"))]
+            "v6-small+tess" => {
+                use pdf_extractor_2_md::ocr::{ArbitratedPaddle, PaddleEngine, PaddleTier};
+                if std::env::var_os("ORT_DYLIB_PATH").is_none() {
+                    std::env::set_var("ORT_DYLIB_PATH", native::onnxruntime_path());
+                }
+                let paddle = PaddleEngine::new(Path::new("models/paddleocr"), PaddleTier::Small)
+                    .map_err(|error| format!("{error:?}"))?;
+                Ok(OcrEngine::Arbitrated(
+                    ArbitratedPaddle::new(
+                        paddle,
+                        Path::new("models/wordlists"),
+                        PathBuf::from("models/tesseract/tessdata"),
+                    ),
+                    Default::default(),
+                ))
+            }
             #[cfg(feature = "ppocr")]
             "v6-medium" | "v6-small" | "v6-tiny" => {
                 use pdf_extractor_2_md::ocr::{PaddleEngine, PaddleTier};
@@ -158,7 +178,7 @@ impl OcrEngine {
                     .map_err(|error| format!("{error:?}"))
             }
             other => Err(format!(
-                "unknown engine {other:?} (this build knows: tesseract, v6-medium, v6-small, v6-tiny)"
+                "unknown engine {other:?} (this build knows: tesseract, v6-medium, v6-small, v6-tiny, v6-small+tess)"
             )),
         }
     }
@@ -176,6 +196,27 @@ impl OcrEngine {
             OcrEngine::Paddle(engine) => {
                 engine.read_page(page).map_err(|error| format!("{error:?}"))
             }
+            #[cfg(all(feature = "ppocr", feature = "tesseract"))]
+            OcrEngine::Arbitrated(engine, totals) => {
+                let (lines, outcome) = engine.read_page(page).map_err(|error| format!("{error:?}"))?;
+                totals.corrections.extend(outcome.corrections);
+                totals.flagged_numbers += outcome.flagged_numbers;
+                totals.declined += outcome.declined;
+                totals.declined_samples.extend(outcome.declined_samples);
+                totals.declined_samples.truncate(40);
+                totals.language = outcome.language;
+                Ok(lines)
+            }
+        }
+    }
+
+    /// What arbitration did across the run, for the batch report.
+    fn arbitration(&self) -> Option<&pdf_extractor_2_md::arbiter::Outcome> {
+        match self {
+            #[cfg(all(feature = "ppocr", feature = "tesseract"))]
+            OcrEngine::Arbitrated(_, totals) => Some(totals),
+            #[allow(unreachable_patterns)]
+            _ => None,
         }
     }
 }
@@ -217,6 +258,21 @@ fn ocr_batch(list: &Path, engine_name: &str) -> ExitCode {
             continue;
         }
         println!("{entry}	{:.2}", started.elapsed().as_secs_f64());
+    }
+    if let Some(totals) = engine.arbitration() {
+        eprintln!(
+            "arbitration: {} correction(s), {} number(s) flagged, {} declined, language {:?}",
+            totals.corrections.len(),
+            totals.flagged_numbers,
+            totals.declined,
+            totals.language,
+        );
+        for (from, to) in &totals.corrections {
+            eprintln!("  {from} -> {to}");
+        }
+        for (paddle, tesseract) in &totals.declined_samples {
+            eprintln!("  declined: {paddle} | tess: {tesseract}");
+        }
     }
     ExitCode::SUCCESS
 }

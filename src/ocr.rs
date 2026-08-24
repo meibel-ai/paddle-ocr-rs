@@ -76,6 +76,40 @@ impl TesseractEngine {
         }
         Ok(lines)
     }
+
+    /// Read one word crop (PSM 7: a single text line). Returns the reading
+    /// with its confidence, or `None` when Tesseract sees nothing there.
+    ///
+    /// Deliberately PSM auto, not single-line or single-word: the margins of
+    /// a word crop carry fragments of the neighbouring lines, and measured on
+    /// real crops PSM 7 returns nothing at all while PSM 8 mashes the noise
+    /// into one garbage token. Auto segments the fragments away, and the
+    /// suspect word is by construction the reading nearest the crop's centre.
+    pub fn read_word(&self, crop: &RgbImage) -> Option<(String, f32)> {
+        let (width, height) = (crop.width() as i32, crop.height() as i32);
+        let output = self.engine.recognize(crop.as_raw(), width, height, 3, width * 3).ok()?;
+        let hierarchy = output.hierarchy?;
+        let words: Vec<_> = hierarchy
+            .blocks
+            .iter()
+            .flat_map(|block| &block.paragraphs)
+            .flat_map(|paragraph| &paragraph.lines)
+            .flat_map(|line| &line.words)
+            .collect();
+        let (centre_x, centre_y) = (crop.width() as f32 / 2.0, crop.height() as f32 / 2.0);
+        words
+            .into_iter()
+            .filter(|word| word.text.trim().chars().count() > 1)
+            .min_by(|a, b| {
+                let off = |w: &tesseract5_rs::TesseractWord| {
+                    let dx = (w.bbox.left + w.bbox.right) as f32 / 2.0 - centre_x;
+                    let dy = (w.bbox.top + w.bbox.bottom) as f32 / 2.0 - centre_y;
+                    dx * dx + dy * dy
+                };
+                off(a).total_cmp(&off(b))
+            })
+            .map(|word| (word.text.trim().to_string(), word.confidence))
+    }
 }
 
 #[cfg(feature = "tesseract")]
@@ -207,9 +241,230 @@ fn to_line(block: &paddle_ocr_rs::ocr_result::TextBlock, page_height: f32) -> Li
     Line { words, bbox }
 }
 
+
+/// The automatic fallback: PP-OCRv6 reads the page, Tesseract re-reads the
+/// words the policy distrusts, and `arbiter::decide` says which reading the
+/// page keeps. See `src/arbiter.rs` for the rules and their provenance.
+#[cfg(all(feature = "ppocr", feature = "tesseract"))]
+pub struct ArbitratedPaddle {
+    paddle: PaddleEngine,
+    lexicon: crate::lexicon::Lexicon,
+    /// One Tesseract per language actually met, created on first use: the
+    /// engine fixes its language at init, while PSM changes freely.
+    rereaders: std::collections::HashMap<&'static str, TesseractEngine>,
+    tessdata: PathBuf,
+}
+
+#[cfg(all(feature = "ppocr", feature = "tesseract"))]
+impl ArbitratedPaddle {
+    pub fn new(
+        paddle: PaddleEngine,
+        wordlists: &std::path::Path,
+        tessdata: PathBuf,
+    ) -> Self {
+        ArbitratedPaddle {
+            paddle,
+            lexicon: crate::lexicon::Lexicon::load(wordlists),
+            rereaders: std::collections::HashMap::new(),
+            tessdata,
+        }
+    }
+
+    /// Read a page and arbitrate it. Every correction is in the outcome:
+    /// silent corrections are how trust is lost.
+    pub fn read_page(
+        &mut self,
+        page: &RgbImage,
+    ) -> Result<(Vec<Line>, crate::arbiter::Outcome), paddle_ocr_rs::ocr_error::OcrError> {
+        let result = self.paddle.ocr.detect_with_options(
+            page,
+            10,
+            1280,
+            0.6,
+            0.3,
+            1.6,
+            false,
+            false,
+            paddle_ocr_rs::ocr_lite::OcrOptions {
+                return_word_box: true,
+                use_doc_orientation: false,
+                ..Default::default()
+            },
+        )?;
+
+        let mut outcome = crate::arbiter::Outcome::default();
+        outcome.language = self.lexicon.detect_language(
+            result
+                .text_blocks
+                .iter()
+                .flat_map(|block| block.text.split_whitespace())
+                .map(|word| word.to_string()),
+        );
+
+        let height = page.height() as f32;
+        let mut lines = Vec::new();
+        for block in &result.text_blocks {
+            if block.text.trim().is_empty() {
+                continue;
+            }
+            // Real word boxes when the recogniser produced them, the
+            // proportional estimate otherwise.
+            if block.words.is_empty() {
+                lines.push(to_line(block, height));
+                continue;
+            }
+            let words: Vec<Word> = block
+                .words
+                .iter()
+                .filter(|word| !word.text.trim().is_empty())
+                .map(|word| {
+                    let (text, corrected) = self.arbitrate_word(page, word, &mut outcome);
+                    let _ = corrected;
+                    let bbox = raster_points_to_rect(&word.box_points, height);
+                    Word {
+                        text,
+                        bbox,
+                        style: Style {
+                            font: String::new(),
+                            size: bbox.height(),
+                            bold: false,
+                            monospace: false,
+                        },
+                        visible: true,
+                    }
+                })
+                .collect();
+            if !words.is_empty() {
+                let bbox = words.iter().map(|word| word.bbox).collect();
+                lines.push(Line { words, bbox });
+            }
+        }
+        Ok((lines, outcome))
+    }
+
+    /// The per-word policy: keep, flag, or replace with Tesseract's reading.
+    fn arbitrate_word(
+        &mut self,
+        page: &RgbImage,
+        word: &paddle_ocr_rs::ocr_result::WordBox,
+        outcome: &mut crate::arbiter::Outcome,
+    ) -> (String, bool) {
+        use crate::arbiter::{self, Decision, Suspect};
+
+        let text = word.text.trim();
+        if !arbiter::is_suspect(text, word.score, outcome.language, &self.lexicon) {
+            return (text.to_string(), false);
+        }
+        let (left, top, right, bottom) = raster_bounds(&word.box_points);
+        let suspect = Suspect { text, score: word.score, left, top, right, bottom };
+        let crop = arbiter::crop_for_reread(page, &suspect);
+        let crop_failed = crop.is_none();
+        let engine = self.rereader(outcome.language);
+        let engine_failed = engine.is_none();
+        let reread = match (crop, &engine) {
+            (Some(crop), Some(engine)) => engine.read_word(&crop),
+            _ => None,
+        };
+        if reread.is_none() && outcome.declined_samples.len() < 40 {
+            let why = if crop_failed {
+                format!("crop fallito [{left},{top},{right},{bottom}]")
+            } else if engine_failed {
+                "engine non disponibile".to_string()
+            } else {
+                format!("lettura vuota [{left},{top},{right},{bottom}]")
+            };
+            outcome.declined_samples.push((text.to_string(), why));
+        }
+        match arbiter::decide(
+            text,
+            reread.as_ref().map(|(reading, confidence)| (reading.as_str(), *confidence)),
+            outcome.language,
+            &self.lexicon,
+        ) {
+            Decision::Replace(correction) => {
+                outcome.corrections.push((text.to_string(), correction.clone()));
+                (correction, true)
+            }
+            Decision::FlagNumber => {
+                outcome.flagged_numbers += 1;
+                (text.to_string(), false)
+            }
+            Decision::Keep => {
+                outcome.declined += 1;
+                if outcome.declined_samples.len() < 40 {
+                    let reading = reread
+                        .map(|(reading, confidence)| format!("{reading} @{confidence:.0}"))
+                        .unwrap_or_else(|| "(nessuna lettura)".to_string());
+                    outcome.declined_samples.push((text.to_string(), reading));
+                }
+                (text.to_string(), false)
+            }
+        }
+    }
+
+    fn rereader(&mut self, language: Option<&'static str>) -> Option<&TesseractEngine> {
+        let language = language?;
+        if !self.rereaders.contains_key(language) {
+            // The detected language plus English, v6's MIX rule: technical
+            // words are English on pages of any language.
+            let langs =
+                if language == "eng" { "eng".to_string() } else { format!("{language}+eng") };
+            let engine = TesseractEngine::new(&langs, self.tessdata.clone()).ok()?;
+            self.rereaders.insert(language, engine);
+        }
+        self.rereaders.get(language)
+    }
+}
+
+/// Bounds of a raster-space quad, clamped to zero.
+#[cfg(all(feature = "ppocr", feature = "tesseract"))]
+fn raster_bounds(points: &[paddle_ocr_rs::ocr_result::Point]) -> (u32, u32, u32, u32) {
+    let (mut left, mut top, mut right, mut bottom) = (u32::MAX, u32::MAX, 0, 0);
+    for point in points {
+        left = left.min(point.x);
+        top = top.min(point.y);
+        right = right.max(point.x);
+        bottom = bottom.max(point.y);
+    }
+    (left, top, right, bottom)
+}
+
+#[cfg(all(feature = "ppocr", feature = "tesseract"))]
+fn raster_points_to_rect(points: &[paddle_ocr_rs::ocr_result::Point], page_height: f32) -> Rect {
+    let (left, top, right, bottom) = raster_bounds(points);
+    Rect::new(
+        left as f32,
+        page_height - bottom as f32,
+        right as f32,
+        page_height - top as f32,
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Diagnostic, not CI: reads a real crop from the scratchpad.
+    #[cfg(feature = "tesseract")]
+    #[test]
+    #[ignore]
+    fn read_word_on_a_real_crop() {
+        let crop = image::open(std::env::var("CROP").expect("set CROP=path"))
+            .expect("open crop")
+            .into_rgb8();
+        let engine = TesseractEngine::new(
+            "ita+eng",
+            PathBuf::from("models/tesseract/tessdata"),
+        )
+        .expect("engine");
+        let raw = engine
+            .engine
+            .recognize(crop.as_raw(), crop.width() as i32, crop.height() as i32, 3, crop.width() as i32 * 3)
+            .expect("recognize");
+        println!("raw text: {:?}", raw.text);
+        println!("hierarchy present: {}", raw.hierarchy.is_some());
+        println!("read_word: {:?}", engine.read_word(&crop));
+    }
 
     #[cfg(feature = "ppocr")]
     #[test]
