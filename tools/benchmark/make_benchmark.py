@@ -44,6 +44,11 @@ DPI = 200
 SEED = 20260823
 
 
+def name_of(level: int) -> str:
+    """Il nome del livello nel file: 25 si scrive `2.5`."""
+    return "2.5" if level == 25 else str(level)
+
+
 def _seed_for(doc: str, page: int, level: int) -> int:
     return abs(hash((SEED, doc, page, level))) % (2**32)
 
@@ -74,6 +79,26 @@ def _build_pipeline(level: int):
             post_phase=[
                 LightingGradient(max_brightness=255, min_brightness=196),
                 Jpeg(quality_range=(50, 70)),
+            ],
+        )
+    if level == 25:
+        # L2.5 — a metà strada fra la fotocopia e il fax. La differenza che
+        # conta rispetto a L3 è l'assenza di **halftone**: il dithering del fax
+        # sostituisce i grigi con puntini e cancella i tratti sottili delle
+        # lettere, ed è il singolo ingrediente che porta ogni motore OCR sotto
+        # il 32% di recall. Qui restano la binarizzazione dura, una piega sola
+        # e un rumore da copia più rado: una pagina malmessa ma ancora leggibile.
+        return AugraphyPipeline(
+            ink_phase=[InkBleed(intensity_range=(0.3, 0.5), kernel_size=(3, 3))],
+            paper_phase=[NoiseTexturize(sigma_range=(3, 6), turbulence_range=(2, 4))],
+            post_phase=[
+                Folding(fold_count=1, fold_noise=0.02),
+                BadPhotoCopy(noise_type=1, noise_iteration=(1, 1),
+                             noise_sparsity=(0.6, 0.9),
+                             noise_concentration=(0.05, 0.15)),
+                Faxify(monochrome=1, halftone=0, invert=1,
+                       half_kernel_size=(1, 1), angle=(0, 360), sigma=(1, 2)),
+                Jpeg(quality_range=(40, 60)),
             ],
         )
     if level == 3:
@@ -147,7 +172,7 @@ def process_pdf(pdf_path: Path, out_root: Path, levels: list[int]) -> int:
         img = cv2.cvtColor(np.array(pil), cv2.COLOR_RGB2BGR)
 
         for level in levels:
-            target = page_dir / f"L{level}.png"
+            target = page_dir / f"L{name_of(level)}.png"
             if target.exists():
                 continue
             cv2.imwrite(str(target), degrade(img, level, doc_name, i))
@@ -164,7 +189,8 @@ def main() -> int:
     ap.add_argument("pdf", nargs="+", type=Path, help="PDF nativi digitali")
     ap.add_argument("--out", type=Path, default=Path("benchmark/out"))
     ap.add_argument("--levels", default="0,1,2,3",
-                    help="livelli di degrado da generare (default 0,1,2,3)")
+                    help="livelli da generare, separati da virgola: 0,1,2,25,3 "
+                         "(25 = L2.5, fra la fotocopia e il fax)")
     args = ap.parse_args()
 
     levels = [int(x) for x in args.levels.split(",")]

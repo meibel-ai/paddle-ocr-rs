@@ -96,6 +96,13 @@ avvisi, ora testo corretto. **Resta da fare**:
 
 ## D. Preprocessing L3 (il guadagno più grosso del ramo OCR)
 
+Nota 2026-08-24: l'autore ha giudicato L3 troppo distruttivo e ha chiesto un
+livello intermedio, **L2.5** (`--levels 25`, file `L2.5.png`): stessa
+binarizzazione dura e una piega, ma **senza halftone** — il dithering del fax
+è l'ingrediente che cancella i tratti sottili delle lettere e porta ogni
+motore sotto il 32%. L3 resta invariato, così le misure già pubblicate
+restano valide, e L2.5 diventa il livello su cui tarare il preprocessing.
+
 RISULTATI §4: L3 (fax+pieghe) = 15-32% per TUTTI i motori. Serve il passo ⓪:
 1. deskew: stimare l'angolo (proiezione a varianza massima, come nello script
    di verifica skew) e raddrizzare SOLO se |angolo| > 0,3° (idempotenza a 0);
