@@ -26,12 +26,12 @@ completa è in `PLAN.md`.
 
 ---
 
-## A. IN VOLO — arbitrato: completare la misura (PRIORITÀ 1)
+## A. Arbitrato — ✅ MISURATO (2026-08-24), v. RISULTATI §4
 
-Stato: la corsa `v6-small+tess` (arbitrato con SOLE wordlist) può essere
-completa o interrotta. Output attesi nello scratchpad:
-`times_v6-small+tess.tsv` (160 righe `path<TAB>secondi`) e
-`arbiter_report.txt` (correzioni/declined su stderr).
+Esito: recall +2,3 su L2, +1,0 su L1, +0,2 su L0, invariato su L3; 1.089
+correzioni, 544 numeri segnalati, 0 toccati. Costo 8× su L3 → **resta da
+fare**: tetto di sospetti oltre il quale saltare l'arbitrato, e la corsa di
+confronto col lessico esteso (`.forms` CC) contro le sole wordlist.
 
 1. Se il tsv ha <160 righe, rilanciare (il batch è idempotente NO — riscrive
    i .md, ma è deterministico: rilanciare intero va bene):

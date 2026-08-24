@@ -9,6 +9,7 @@ use pdf_extractor_2_md::assemble;
 use pdf_extractor_2_md::detect::{self, DocumentReport, ScanStrategy};
 use pdf_extractor_2_md::integrity::{self, ChkDefaced, IntegrityCheck};
 use pdf_extractor_2_md::markdown::{self, Images, Options, Writer, FIGURE_DPI};
+#[cfg(any(feature = "tesseract", feature = "ppocr"))]
 use pdf_extractor_2_md::policy;
 use pdf_extractor_2_md::native;
 use pdf_extractor_2_md::region::Region;
@@ -16,6 +17,7 @@ use pdf_extractor_2_md::structure::Typography;
 
 const USAGE: &str = "\
 usage: pdf2md <input.pdf> [-o out.md] [--images embed|files|skip]
+       OCR delle pagine scansionate: [--engine v6|tesseract] [--model small|medium|tiny] [--fallback]
        pdf2md <input.pdf> --report [--sample N]   pages, routing and integrity
        pdf2md <input.pdf> --lines PAGE            lines the native branch reads (0 = all)
        pdf2md <input.pdf> --structure             outline, metadata, rules, images
@@ -49,14 +51,24 @@ fn main() -> ExitCode {
 
     let mut task = Task::Convert { output: None, images: Images::Embed };
     let mut strategy = ScanStrategy::Full;
-    let mut engine = String::from("tesseract");
-    // `--engine` on a conversion selects the OCR engine for the scanned
-    // pages; left out, the policy decides.
-    let mut requested_engine: Option<String> = None;
+    // The OCR selection: which engine, which PP-OCRv6 tier, and whether the
+    // word-level Tesseract fallback checks the uncertain words. The three are
+    // orthogonal — the tier decides how well a page is read, the fallback
+    // decides how its doubtful words are verified. All unused, and so left
+    // out, in a build without an OCR branch — where they are still declared,
+    // so the dispatch below reads the same in every configuration.
+    #[allow(unused_mut, unused_assignments)]
+    let (mut engine, mut requested_engine, mut model, mut fallback) =
+        (String::from("tesseract"), None::<String>, None::<String>, false);
+    let _ = (&engine, &model);
     while let Some(flag) = args.next() {
         match flag.as_str() {
             "--structure" => task = Task::Structure,
             "--report" => task = Task::Report(strategy),
+            // Orthogonal to the engine: whichever PP-OCRv6 tier reads the
+            // page, the fallback is what checks its uncertain words.
+            #[cfg(all(feature = "ppocr", feature = "tesseract"))]
+            "--fallback" => fallback = true,
             _ => {
                 let Some(argument) = args.next() else {
                     eprintln!("{flag} needs a value\n{USAGE}");
@@ -107,15 +119,24 @@ fn main() -> ExitCode {
                         requested_engine = Some(chosen.clone());
                         engine = chosen;
                     }
+                    #[cfg(feature = "ppocr")]
+                    ("--model", tier) => model = Some(tier),
                     _ => return usage_error(),
                 }
             }
         }
     }
 
+    // `--engine v6 --model small` and the older `--engine v6-small` name the
+    // same thing; the resolved name is what the rest of the program sees.
+    #[cfg(any(feature = "tesseract", feature = "ppocr"))]
+    let engine = resolve_engine(&engine, model.as_deref());
+    #[cfg(any(feature = "tesseract", feature = "ppocr"))]
+    let requested_engine = requested_engine.map(|_| engine.clone());
+
     match task {
         Task::Convert { output, images } => {
-            convert(&path, output, images, requested_engine.as_deref())
+            convert(&path, output, images, requested_engine.as_deref(), fallback)
         }
         Task::Report(strategy) => report(&path, strategy),
         Task::Lines(page) => print_lines(&path, page),
@@ -123,9 +144,26 @@ fn main() -> ExitCode {
         #[cfg(feature = "layout")]
         Task::Layout(page) => print_layout(&path, page),
         #[cfg(any(feature = "tesseract", feature = "ppocr"))]
-        Task::OcrImage(image) => ocr_image(&image, &engine),
+        Task::OcrImage(image) => ocr_image(&image, &engine, fallback),
         #[cfg(any(feature = "tesseract", feature = "ppocr"))]
-        Task::OcrBatch(list) => ocr_batch(&list, &engine),
+        Task::OcrBatch(list) => ocr_batch(&list, &engine, fallback),
+    }
+}
+
+/// The engine name the rest of the program uses, from `--engine` and
+/// `--model`.
+///
+/// `--engine v6 --model small` is the way to say it now; `v6-small` remains a
+/// valid name because measurements and reports already carry it, and a name
+/// that used to work must keep working.
+#[cfg(any(feature = "tesseract", feature = "ppocr"))]
+fn resolve_engine(engine: &str, model: Option<&str>) -> String {
+    let tier = model.unwrap_or("small");
+    match engine {
+        "v6" | "ppocr" | "ppocrv6" => format!("v6-{tier}"),
+        // A tier named on `--engine` wins over `--model`: it is the more
+        // specific statement of the two.
+        other => other.to_string(),
     }
 }
 
@@ -152,7 +190,16 @@ enum OcrEngine {
 
 #[cfg(any(feature = "tesseract", feature = "ppocr"))]
 impl OcrEngine {
-    fn open(name: &str) -> Result<Self, String> {
+    /// Open the named engine. `fallback` wraps a PP-OCRv6 tier in the
+    /// word-level Tesseract arbitration; it means nothing for Tesseract
+    /// itself, which is already the arbiter.
+    fn open(name: &str, fallback: bool) -> Result<Self, String> {
+        // The historical `v6-small+tess` spelling still names the arbitrated
+        // engine, so older commands and report suffixes keep working.
+        let (name, fallback) = match name.strip_suffix("+tess") {
+            Some(base) => (base, true),
+            None => (name, fallback),
+        };
         match name {
             #[cfg(feature = "tesseract")]
             "tesseract" => pdf_extractor_2_md::ocr::TesseractEngine::new(
@@ -161,23 +208,6 @@ impl OcrEngine {
             )
             .map(OcrEngine::Tesseract)
             .map_err(|error| format!("{error:?}")),
-            #[cfg(all(feature = "ppocr", feature = "tesseract"))]
-            "v6-small+tess" => {
-                use pdf_extractor_2_md::ocr::{ArbitratedPaddle, PaddleEngine, PaddleTier};
-                if std::env::var_os("ORT_DYLIB_PATH").is_none() {
-                    std::env::set_var("ORT_DYLIB_PATH", native::onnxruntime_path());
-                }
-                let paddle = PaddleEngine::new(Path::new("models/paddleocr"), PaddleTier::Small)
-                    .map_err(|error| format!("{error:?}"))?;
-                Ok(OcrEngine::Arbitrated(
-                    ArbitratedPaddle::new(
-                        paddle,
-                        Path::new("models/wordlists"),
-                        PathBuf::from("models/tesseract/tessdata"),
-                    ),
-                    Default::default(),
-                ))
-            }
             #[cfg(feature = "ppocr")]
             "v6-medium" | "v6-small" | "v6-tiny" => {
                 use pdf_extractor_2_md::ocr::{PaddleEngine, PaddleTier};
@@ -189,22 +219,45 @@ impl OcrEngine {
                     "v6-tiny" => PaddleTier::Tiny,
                     _ => PaddleTier::Medium,
                 };
-                PaddleEngine::new(Path::new("models/paddleocr"), tier)
-                    .map(OcrEngine::Paddle)
-                    .map_err(|error| format!("{error:?}"))
+                let paddle = PaddleEngine::new(Path::new("models/paddleocr"), tier)
+                    .map_err(|error| format!("{error:?}"))?;
+                if !fallback {
+                    return Ok(OcrEngine::Paddle(paddle));
+                }
+                // The arbitration wraps whichever tier was chosen: the tier
+                // decides how well the page is read, the fallback decides how
+                // the uncertain words are checked.
+                #[cfg(feature = "tesseract")]
+                {
+                    use pdf_extractor_2_md::ocr::ArbitratedPaddle;
+                    Ok(OcrEngine::Arbitrated(
+                        ArbitratedPaddle::new(
+                            paddle,
+                            Path::new("models/wordlists"),
+                            PathBuf::from("models/tesseract/tessdata"),
+                        ),
+                        Default::default(),
+                    ))
+                }
+                #[cfg(not(feature = "tesseract"))]
+                Err("--fallback richiede la feature `tesseract`".to_string())
             }
             other => Err(format!(
-                "unknown engine {other:?} (this build knows: tesseract, v6-medium, v6-small, v6-tiny, v6-small+tess)"
+                "motore sconosciuto {other:?} (questa build conosce: tesseract, v6-small, v6-medium, v6-tiny; \
+                 con --fallback la validazione parola per parola via Tesseract)"
             )),
         }
     }
 
     /// The first engine of the policy that actually opens, with the reason
     /// each refusal gave — a document read by the parachute must say so.
-    fn open_by_policy(requested: Option<&str>) -> Result<(Self, String), Vec<String>> {
+    fn open_by_policy(
+        requested: Option<&str>,
+        fallback: bool,
+    ) -> Result<(Self, String), Vec<String>> {
         let mut refusals = Vec::new();
         for name in policy::candidates(requested) {
-            match Self::open(&name) {
+            match Self::open(&name, fallback) {
                 Ok(engine) => return Ok((engine, name)),
                 Err(error) => refusals.push(format!("{name}: {error}")),
             }
@@ -251,7 +304,7 @@ impl OcrEngine {
 }
 
 #[cfg(any(feature = "tesseract", feature = "ppocr"))]
-fn ocr_batch(list: &Path, engine_name: &str) -> ExitCode {
+fn ocr_batch(list: &Path, engine_name: &str, fallback: bool) -> ExitCode {
     use pdf_extractor_2_md::structure::Typography;
     use std::time::Instant;
 
@@ -259,7 +312,7 @@ fn ocr_batch(list: &Path, engine_name: &str) -> ExitCode {
         eprintln!("cannot read {}", list.display());
         return ExitCode::FAILURE;
     };
-    let mut engine = match OcrEngine::open(engine_name) {
+    let mut engine = match OcrEngine::open(engine_name, fallback) {
         Ok(engine) => engine,
         Err(error) => {
             eprintln!("engine unavailable: {error}");
@@ -281,7 +334,8 @@ fn ocr_batch(list: &Path, engine_name: &str) -> ExitCode {
             Writer::new(Options { images: Images::Skip, keep_furniture: true }, typography);
         let blocks = assemble::assemble(lines, &[]);
         let markdown = writer.page(&blocks, None);
-        let out = format!("{entry}.{engine_name}.md");
+        let suffix = if fallback { format!("{engine_name}+tess") } else { engine_name.to_string() };
+        let out = format!("{entry}.{suffix}.md");
         if std::fs::write(&out, markdown).is_err() {
             println!("{entry}	ERROR write");
             continue;
@@ -310,10 +364,10 @@ fn ocr_batch(list: &Path, engine_name: &str) -> ExitCode {
 /// same column detection, assembly and Markdown writer as the native branch.
 /// `<input>` is ignored in this mode; the image is the input.
 #[cfg(any(feature = "tesseract", feature = "ppocr"))]
-fn ocr_image(image_path: &Path, engine_name: &str) -> ExitCode {
+fn ocr_image(image_path: &Path, engine_name: &str, fallback: bool) -> ExitCode {
     use pdf_extractor_2_md::structure::Typography;
 
-    let mut engine = match OcrEngine::open(engine_name) {
+    let mut engine = match OcrEngine::open(engine_name, fallback) {
         Ok(engine) => engine,
         Err(error) => {
             eprintln!("engine unavailable: {error}");
@@ -415,7 +469,13 @@ fn slug(name: &str) -> String {
 
 /// The conversion itself: route the pages, read the ones the native branch
 /// owns, and write what came out.
-fn convert(path: &Path, output: Option<PathBuf>, images: Images, engine: Option<&str>) -> ExitCode {
+fn convert(
+    path: &Path,
+    output: Option<PathBuf>,
+    images: Images,
+    engine: Option<&str>,
+    fallback: bool,
+) -> ExitCode {
     let Ok(document) = lopdf::Document::load(path) else {
         eprintln!("cannot open {}", path.display());
         return ExitCode::FAILURE;
@@ -466,7 +526,7 @@ fn convert(path: &Path, output: Option<PathBuf>, images: Images, engine: Option<
     let mut pages = Vec::new();
     // The OCR engine is opened only if a page actually needs it: loading a
     // recogniser costs seconds, and most documents never route a page.
-    let mut ocr = OcrBranch::new(engine, routing.pages_needing_ocr().count());
+    let mut ocr = OcrBranch::new(engine, fallback, routing.pages_needing_ocr().count());
 
     for (index, page) in rendered.pages().iter().enumerate() {
         let number = index as u32 + 1;
@@ -780,6 +840,7 @@ fn print_integrity(report: &chk_defaced::finding::Report, routed: usize) {
 #[cfg(any(feature = "tesseract", feature = "ppocr"))]
 struct OcrBranch {
     requested: Option<String>,
+    fallback: bool,
     needed: usize,
     engine: Option<(OcrEngine, String)>,
     failed: bool,
@@ -787,9 +848,10 @@ struct OcrBranch {
 
 #[cfg(any(feature = "tesseract", feature = "ppocr"))]
 impl OcrBranch {
-    fn new(requested: Option<&str>, needed: usize) -> Self {
+    fn new(requested: Option<&str>, fallback: bool, needed: usize) -> Self {
         OcrBranch {
             requested: requested.map(str::to_string),
+            fallback,
             needed,
             engine: None,
             failed: false,
@@ -799,9 +861,10 @@ impl OcrBranch {
     /// The engine, opening it the first time it is asked for.
     fn engine(&mut self) -> Option<(&mut OcrEngine, &str)> {
         if self.engine.is_none() && !self.failed && self.needed > 0 {
-            match OcrEngine::open_by_policy(self.requested.as_deref()) {
+            match OcrEngine::open_by_policy(self.requested.as_deref(), self.fallback) {
                 Ok((engine, name)) => {
-                    eprintln!("ramo OCR: {name} ({} pagina/e)", self.needed);
+                    let how = if self.fallback { " + fallback Tesseract" } else { "" };
+                    eprintln!("ramo OCR: {name}{how} ({} pagina/e)", self.needed);
                     self.engine = Some((engine, name));
                 }
                 Err(refusals) => {
@@ -885,7 +948,7 @@ struct OcrBranch;
 
 #[cfg(not(any(feature = "tesseract", feature = "ppocr")))]
 impl OcrBranch {
-    fn new(_requested: Option<&str>, _needed: usize) -> Self {
+    fn new(_requested: Option<&str>, _fallback: bool, _needed: usize) -> Self {
         OcrBranch
     }
 }
