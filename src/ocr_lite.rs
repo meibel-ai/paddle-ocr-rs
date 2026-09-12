@@ -197,6 +197,17 @@ impl OcrLite {
         Ok(())
     }
 
+    /// Pre-run the recogniser on every shape it will use, so cuDNN's
+    /// per-shape algorithm selection (~2.5s each, measured) happens at startup
+    /// rather than inside the first document to hit that shape.
+    pub fn warmup(&mut self, opts: &DetectOptions) -> Result<(), OcrError> {
+        let (batches, widths) = CrnnNet::warmup_shapes(opts.rec);
+        if widths.is_empty() {
+            return Ok(());
+        }
+        self.crnn_net.warmup(&batches, &widths)
+    }
+
     fn detect_base(
         &mut self,
         img_src: &image::RgbImage,
@@ -360,6 +371,17 @@ impl OcrLite {
         scale: &ScaleParam,
         opts: &DetectOptions,
     ) -> Result<OcrResult, OcrError> {
+        // Stage timings, gated on OCR_PROFILE=1. Guessing at the split cost two
+        // wrong optimisation targets; this makes the attribution exact.
+        let prof = std::env::var_os("OCR_PROFILE").is_some();
+        let t = std::time::Instant::now();
+        macro_rules! mark {
+            ($label:expr) => {
+                if prof {
+                    eprintln!("OCR_PROFILE {:>22}: {:>8.1}ms", $label, t.elapsed().as_secs_f64() * 1000.0);
+                }
+            };
+        }
         let text_boxes = self.db_net.get_text_boxes(
             img_src,
             scale,
@@ -369,11 +391,14 @@ impl OcrLite {
             opts.post,
         )?;
 
+        mark!("detect(+post)");
         let part_images = OcrUtils::get_part_images(img_src, &text_boxes);
+        mark!("crop_extract");
 
         let angles = self
             .angle_net
             .get_angles(&part_images, opts.do_angle, opts.most_angle)?;
+        mark!("angle");
 
         let mut rotated_images: Vec<image::RgbImage> = Vec::with_capacity(part_images.len());
 
@@ -395,6 +420,7 @@ impl OcrLite {
             rotated_images.push(part_image);
         }
 
+        mark!("rotate");
         let text_lines = self.crnn_net.get_text_lines_batched(
             &rotated_images,
             &angle_rollback_records,
@@ -402,6 +428,10 @@ impl OcrLite {
             opts.rec,
         )?;
 
+        mark!("recognise");
+        if prof {
+            eprintln!("OCR_PROFILE {:>22}: {}", "boxes", text_boxes.len());
+        }
         let mut text_blocks = Vec::with_capacity(text_lines.len());
         for i in 0..text_lines.len() {
             text_blocks.push(TextBlock {

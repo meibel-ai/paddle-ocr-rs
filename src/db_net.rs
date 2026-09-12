@@ -111,7 +111,13 @@ impl DbNet {
 
         let tensor = Tensor::from_array(input_tensors)?;
 
+        let prof = std::env::var_os("OCR_PROFILE").is_some();
+        let t0 = std::time::Instant::now();
         let outputs = session.run(inputs![self.input_names[0].clone() => tensor])?;
+        if prof {
+            eprintln!("OCR_PROFILE {:>22}: {:>8.1}ms", "det_infer", t0.elapsed().as_secs_f64() * 1000.0);
+        }
+        let t1 = std::time::Instant::now();
 
         let text_boxes = Self::get_text_boxes_core(
             &outputs,
@@ -131,6 +137,9 @@ impl DbNet {
             opts,
         )?;
 
+        if prof {
+            eprintln!("OCR_PROFILE {:>22}: {:>8.1}ms", "db_postprocess", t1.elapsed().as_secs_f64() * 1000.0);
+        }
         Ok(text_boxes)
     }
 

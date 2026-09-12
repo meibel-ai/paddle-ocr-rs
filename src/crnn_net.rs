@@ -190,6 +190,54 @@ impl CrnnNet {
         Ok(())
     }
 
+    /// Run one dummy inference per `(batch, width)` shape the recogniser will
+    /// actually use, so cuDNN's algorithm selection is paid once at startup
+    /// instead of by the first document that happens to hit each shape.
+    ///
+    /// Measured on a 564-box page (Blackwell, ORT 1.30, batch 16, 3-rung
+    /// ladder): the FIRST inference of a shape costs ~2.5s and every
+    /// subsequent one costs ~12ms — a 200x cliff. Two shapes dominated, so
+    /// ~5.0s of a 5.9s recognition stage was autotuning, not work. That cost
+    /// belongs to process startup: a long-lived worker pays it once, and
+    /// without this it is instead charged to whichever document arrives first.
+    ///
+    /// Errors are returned rather than ignored: if a warmup shape cannot run,
+    /// the real inference would not have run either.
+    pub fn warmup(&mut self, batch_sizes: &[usize], widths: &[u32]) -> Result<(), OcrError> {
+        let Some(session) = &mut self.session else {
+            return Err(OcrError::SessionNotInitialized);
+        };
+        for &n in batch_sizes {
+            for &w in widths {
+                let dummy = ndarray::Array4::<f32>::zeros((
+                    n.max(1),
+                    3,
+                    CRNN_DST_HEIGHT as usize,
+                    w.max(1) as usize,
+                ));
+                let tensor = Tensor::from_array(dummy)?;
+                let _ = session.run(inputs![self.input_names[0].clone() => tensor])?;
+            }
+        }
+        Ok(())
+    }
+
+    /// The shapes [`Self::warmup`] should be given for a run configured by
+    /// `opts`: the full batch plus the partial-final-batch sizes cannot be
+    /// known ahead of time, so warm the full batch only — a partial batch is a
+    /// different shape but occurs at most once per rung per page, and measured
+    /// at 51ms rather than 2.5s.
+    pub fn warmup_shapes(opts: RecBatchOptions) -> (Vec<usize>, Vec<u32>) {
+        let widths = if opts.width_ladder {
+            WIDTH_LADDER.to_vec()
+        } else {
+            // Page-max padding: the width is document-dependent and unknowable
+            // here, so there is nothing useful to warm.
+            Vec::new()
+        };
+        (vec![opts.batch_size.max(1)], widths)
+    }
+
     /// Recognise every crop, one `session.run` per crop, all padded to the
     /// page-wide maximum width. Kept for bit-compatibility; prefer
     /// [`Self::get_text_lines_batched`].
@@ -365,8 +413,12 @@ impl CrnnNet {
                 .assign(&one.slice(ndarray::s![.., .., .., ..w]));
         }
 
+        let prof = std::env::var_os("OCR_PROFILE").is_some();
+        let t_pre = std::time::Instant::now();
         let tensor = Tensor::from_array(batch)?;
         let outputs = session.run(inputs![self.input_names[0].clone() => tensor])?;
+        let d_run = t_pre.elapsed().as_secs_f64() * 1000.0;
+        let t_dec = std::time::Instant::now();
         let (_, out) = outputs.iter().next().unwrap();
         let (shape, data) = out.try_extract_tensor::<f32>()?;
 
@@ -392,6 +444,12 @@ impl CrnnNet {
                 Self::score_to_text_line(slice, t, c, keys)
             })
             .collect();
+        if prof {
+            eprintln!(
+                "OCR_PROFILE   batch n={:<4} w={:<5} run={:>7.1}ms decode={:>7.1}ms",
+                n, target_w, d_run, t_dec.elapsed().as_secs_f64() * 1000.0
+            );
+        }
         lines
     }
 
