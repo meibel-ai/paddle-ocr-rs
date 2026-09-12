@@ -17,27 +17,60 @@ const NORM_VALUES: [f32; 3] = [1.0 / 127.5, 1.0 / 127.5, 1.0 / 127.5];
 /// 3200px is PP-OCRv6's own advertised upper dynamic shape.
 const MAX_REC_WIDTH: u32 = 3200;
 
-/// How crops are grouped into recognition batches.
+/// Widths a recognition input may be padded to.
+///
+/// Padding to the *page* maximum (the historical behaviour) is quadratically
+/// wasteful on documents whose widest crop dwarfs the median one. A schedule
+/// table with wide rows pushes every crop — including 3-character cells — to
+/// ~3200px, and that width sets four costs at once: the GPU tensor, the
+/// device→host transfer, the zeroed host buffer, and the CTC decode, which
+/// scans `time_steps x 18_710 classes` where `time_steps ≈ width / 8`.
+///
+/// Measured on a 564-box scanned schedule (Kappa Alpha, Blackwell, 4096px
+/// detection): page-max padding produced a `[1, ~400, 18710]` output per crop
+/// — **30 MB each, ~17 GB for the page** — and a ~4.2-billion-element scalar
+/// argmax.
+///
+/// A fixed ladder fixes both halves of the problem that per-batch-max padding
+/// only half-solves: padding stays close to each crop's real width, AND the
+/// shape set stays tiny, so ORT keeps its cached CUDA kernel plan instead of
+/// re-selecting cuDNN algorithms per distinct width (see
+/// `DetectParams::rec_batch` on the Starling side for that measurement).
+const WIDTH_LADDER: &[u32] = &[160, 320, 480, 640, 960, 1280, 1920, 2560, 3200];
+
+/// Smallest ladder rung that fits `w`.
+fn ladder_width(w: u32) -> u32 {
+    WIDTH_LADDER
+        .iter()
+        .copied()
+        .find(|&rung| rung >= w)
+        .unwrap_or(MAX_REC_WIDTH)
+}
+
+/// How crops are grouped into recognition batches, and how they are padded.
 #[derive(Debug, Clone, Copy)]
 pub struct RecBatchOptions {
-    /// Maximum crops per `session.run`. `1` restores the historical
-    /// one-at-a-time path exactly and is the kill-switch.
+    /// Maximum crops per `session.run`. `1` is one-at-a-time.
     pub batch_size: usize,
+    /// Pad each input to the smallest [`WIDTH_LADDER`] rung that fits it,
+    /// rather than to the page-wide (or batch-wide) maximum.
+    pub width_ladder: bool,
 }
 
 impl Default for RecBatchOptions {
     fn default() -> Self {
-        // PP-OCRv6 advertises a batch-8 dynamic shape ([8, 3, 48, 3200]), so 8
-        // is the intended operating point. Python PaddleOCR uses 6.
-        Self { batch_size: 8 }
+        // One at a time, but ladder-padded: unbatched keeps the shape set small
+        // on its own, and the ladder removes the page-max blow-up. Batching on
+        // top of this is a further win only once it stops perturbing shapes.
+        Self { batch_size: 1, width_ladder: true }
     }
 }
 
 impl RecBatchOptions {
     /// One crop per inference, padded to the page-wide maximum width — the
-    /// behaviour this crate had before batching existed.
+    /// behaviour this crate had before batching or the ladder existed.
     pub fn legacy() -> Self {
-        Self { batch_size: 1 }
+        Self { batch_size: 1, width_ladder: false }
     }
 }
 
@@ -201,14 +234,15 @@ impl CrnnNet {
         if opts.batch_size <= 1 {
             // Legacy path, byte-for-byte: one page-wide pad width, one run each.
             let max_wh_ratio = part_imgs.iter().map(wh_ratio).fold(base_wh_ratio, f32::max);
+            let lad = opts.width_ladder;
             let mut text_lines = Vec::with_capacity(part_imgs.len());
             for (index, img) in part_imgs.iter().enumerate() {
-                let mut text_line = self.get_text_line_with_wh_ratio(img, max_wh_ratio)?;
+                let mut text_line = self.get_text_line_padded(img, max_wh_ratio, lad)?;
                 if (text_line.text_score.is_nan()
                     || text_line.text_score < angle_rollback_threshold)
                     && let Some(rollback) = angle_rollback_records.get(&index)
                 {
-                    text_line = self.get_text_line_with_wh_ratio(rollback, max_wh_ratio)?;
+                    text_line = self.get_text_line_padded(rollback, max_wh_ratio, lad)?;
                 }
                 text_lines.push(text_line);
             }
@@ -229,7 +263,7 @@ impl CrnnNet {
                 .map(|&i| wh_ratio(&part_imgs[i]))
                 .fold(base_wh_ratio, f32::max);
             let imgs: Vec<&image::RgbImage> = chunk.iter().map(|&i| &part_imgs[i]).collect();
-            let lines = self.run_batch(&imgs, batch_ratio)?;
+            let lines = self.run_batch(&imgs, batch_ratio, opts.width_ladder)?;
             for (&i, line) in chunk.iter().zip(lines) {
                 text_lines[i] = Some(line);
             }
@@ -251,7 +285,7 @@ impl CrnnNet {
             let imgs: Vec<&image::RgbImage> =
                 chunk.iter().map(|&i| &angle_rollback_records[&i]).collect();
             let batch_ratio = imgs.iter().map(|i| wh_ratio(i)).fold(base_wh_ratio, f32::max);
-            let lines = self.run_batch(&imgs, batch_ratio)?;
+            let lines = self.run_batch(&imgs, batch_ratio, opts.width_ladder)?;
             for (&i, line) in chunk.iter().zip(lines) {
                 text_lines[i] = Some(line);
             }
@@ -270,6 +304,7 @@ impl CrnnNet {
         &mut self,
         imgs: &[&image::RgbImage],
         max_wh_ratio: f32,
+        ladder: bool,
     ) -> Result<Vec<TextLine>, OcrError> {
         let Some(session) = &mut self.session else {
             return Err(OcrError::SessionNotInitialized);
@@ -296,10 +331,13 @@ impl CrnnNet {
         // Pad to the batch's target width, but never narrower than its widest
         // member — clipping a crop would silently drop its tail characters.
         let widest = resized.iter().map(|r| r.width()).max().unwrap_or(1);
-        let target_w = ((CRNN_DST_HEIGHT as f32 * max_wh_ratio) as u32)
-            .max(widest)
-            .min(MAX_REC_WIDTH)
-            .max(1);
+        let target_w = if ladder {
+            ladder_width(widest)
+        } else {
+            ((CRNN_DST_HEIGHT as f32 * max_wh_ratio) as u32).max(widest)
+        }
+        .min(MAX_REC_WIDTH)
+        .max(1);
 
         let mut batch =
             ndarray::Array4::<f32>::zeros((resized.len(), 3, CRNN_DST_HEIGHT as usize, target_w as usize));
@@ -345,6 +383,17 @@ impl CrnnNet {
         img_src: &image::RgbImage,
         max_wh_ratio: f32,
     ) -> Result<TextLine, OcrError> {
+        self.get_text_line_padded(img_src, max_wh_ratio, false)
+    }
+
+    /// Recognise one crop. `width_ladder` pads to the smallest
+    /// [`WIDTH_LADDER`] rung instead of `48 * max_wh_ratio`.
+    fn get_text_line_padded(
+        &mut self,
+        img_src: &image::RgbImage,
+        max_wh_ratio: f32,
+        width_ladder: bool,
+    ) -> Result<TextLine, OcrError> {
         let Some(session) = &mut self.session else {
             return Err(OcrError::SessionNotInitialized);
         };
@@ -366,8 +415,12 @@ impl CrnnNet {
         // Python PaddleOCR pads recognition inputs to (48 * max_wh_ratio) with zeros.
         // Zero in normalized space = (0/127.5 - 1.0) = -1.0, but Python uses actual
         // 0.0 in its padded tensor (the padding is applied AFTER normalization).
-        let input_tensors = if max_wh_ratio > 0.0 {
-            let target_w = (CRNN_DST_HEIGHT as f32 * max_wh_ratio) as u32;
+        let input_tensors = if width_ladder || max_wh_ratio > 0.0 {
+            let target_w = if width_ladder {
+                ladder_width(resized_w)
+            } else {
+                (CRNN_DST_HEIGHT as f32 * max_wh_ratio) as u32
+            };
             let target_w = target_w.max(resized_w); // never shrink
             if target_w > resized_w {
                 let shape = input_tensors.shape();
@@ -392,12 +445,12 @@ impl CrnnNet {
         let (_, red_data) = outputs.iter().next().unwrap();
 
         let (shape, src_data) = red_data.try_extract_tensor::<f32>()?;
-        let dimensions = shape;
-        let height = dimensions[1] as usize;
-        let width = dimensions[2] as usize;
-        let src_data: Vec<f32> = src_data.to_vec();
-
-        Self::score_to_text_line(&src_data, height, width, &self.keys)
+        let height = shape[1] as usize;
+        let width = shape[2] as usize;
+        // No `.to_vec()`: the output is `[1, time_steps, 18_710]`, which at
+        // page-max padding is ~30 MB per crop and ~17 GB across a 564-box page.
+        // `score_to_text_line` only reads it, so copying it was pure memcpy.
+        Self::score_to_text_line(src_data, height, width, &self.keys)
     }
 
     fn score_to_text_line(
@@ -442,5 +495,55 @@ impl CrnnNet {
             0.0
         };
         Ok(text_line)
+    }
+}
+
+#[cfg(test)]
+mod ladder_tests {
+    use super::{ladder_width, RecBatchOptions, MAX_REC_WIDTH, WIDTH_LADDER};
+
+    #[test]
+    fn rounds_up_to_the_next_rung() {
+        assert_eq!(ladder_width(1), 160);
+        assert_eq!(ladder_width(160), 160);
+        assert_eq!(ladder_width(161), 320);
+        assert_eq!(ladder_width(900), 960);
+        assert_eq!(ladder_width(3200), 3200);
+    }
+
+    /// Never shrink below the crop: a rung smaller than the input would clip
+    /// the tail of the line and silently drop characters.
+    #[test]
+    fn never_returns_less_than_the_input_until_the_ceiling() {
+        for w in [1u32, 50, 300, 700, 1000, 2000, 3000, 3200] {
+            assert!(ladder_width(w) >= w, "{w} -> {}", ladder_width(w));
+        }
+        // Above the ceiling it clamps; callers additionally `.max(resized_w)`
+        // and the resize itself is capped at MAX_REC_WIDTH.
+        assert_eq!(ladder_width(9999), MAX_REC_WIDTH);
+    }
+
+    #[test]
+    fn ladder_is_sorted_and_ends_at_the_ceiling() {
+        assert!(WIDTH_LADDER.windows(2).all(|w| w[0] < w[1]), "must be ascending");
+        assert_eq!(*WIDTH_LADDER.last().unwrap(), MAX_REC_WIDTH);
+    }
+
+    /// The ladder is the point of the default; `legacy()` must keep page-max
+    /// padding so earlier output can still be reproduced.
+    #[test]
+    fn default_ladders_legacy_does_not() {
+        assert!(RecBatchOptions::default().width_ladder);
+        assert!(!RecBatchOptions::legacy().width_ladder);
+        assert_eq!(RecBatchOptions::legacy().batch_size, 1);
+    }
+
+    /// The whole point: a small crop on a page with one very wide crop must not
+    /// inherit the wide crop's width. 400px should cost 480, not 3200 — an ~8x
+    /// reduction in tensor, transfer, memset and CTC decode for that crop.
+    #[test]
+    fn a_narrow_crop_is_not_dragged_to_the_page_max() {
+        assert_eq!(ladder_width(400), 480);
+        assert!(ladder_width(400) * 6 < 3200);
     }
 }
