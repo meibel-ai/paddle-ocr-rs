@@ -10,4 +10,8 @@ pub enum OcrError {
     ImageError(#[from] image::ImageError),
     #[error("Session not initialized")]
     SessionNotInitialized,
+    /// A model returned a shape the caller cannot interpret — e.g. a
+    /// recognition batch of N crops coming back with a different N.
+    #[error("Model output mismatch: {0}")]
+    OutputMismatch(String),
 }

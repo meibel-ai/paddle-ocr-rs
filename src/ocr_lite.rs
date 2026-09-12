@@ -6,13 +6,86 @@ use ort::session::builder::SessionBuilder;
 use crate::{
     angle_net::AngleNet,
     base_net::BaseNet,
-    crnn_net::CrnnNet,
-    db_net::DbNet,
+    crnn_net::{CrnnNet, RecBatchOptions},
+    db_net::{DbNet, PostProcessOptions},
     ocr_error::OcrError,
     ocr_result::{OcrResult, Point, TextBlock},
     ocr_utils::OcrUtils,
-    scale_param::ScaleParam,
+    scale_param::{RoundMode, ScaleParam},
 };
+
+/// Every knob the detect → recognise pipeline takes.
+///
+/// This exists so callers configure the pipeline through one named value
+/// instead of a twelve-argument positional call, where `box_score_thresh` and
+/// `box_thresh` sit adjacent and are trivially transposed.
+#[derive(Debug, Clone, Copy)]
+pub struct DetectOptions {
+    /// Border added around the page before detection, to improve edge recall.
+    pub padding: u32,
+    /// Cap on the resized long side. `0` means "do not cap" — the source size
+    /// is used. This never *up*scales; it is a ceiling only.
+    pub max_side_len: u32,
+    /// PaddleOCR's `box_thresh`: minimum contour score to keep a box.
+    pub box_score_thresh: f32,
+    /// PaddleOCR's `thresh`: probability-map binarization threshold.
+    pub box_thresh: f32,
+    /// PaddleOCR's `unclip_ratio`: how far to expand each box.
+    pub un_clip_ratio: f32,
+    /// Run the angle classifier on each crop.
+    pub do_angle: bool,
+    /// Apply the page's majority angle to every crop.
+    pub most_angle: bool,
+    /// How detection input dimensions snap to a multiple of 32.
+    pub round_mode: RoundMode,
+    /// DB post-processing options.
+    pub post: PostProcessOptions,
+    /// Recognition batching options.
+    pub rec: RecBatchOptions,
+    /// Undo a crop's angle correction when recognition scores badly.
+    pub angle_rollback: bool,
+    /// Score below which `angle_rollback` triggers.
+    pub angle_rollback_threshold: f32,
+}
+
+impl Default for DetectOptions {
+    /// Reference PP-OCRv6: the three DB thresholds are the published values
+    /// from `PP-OCRv6_medium_det_onnx/inference.yml`, and the resize/dilation
+    /// behaviour matches PaddleOCR rather than this crate's history.
+    fn default() -> Self {
+        Self {
+            padding: 50,
+            max_side_len: 0,
+            box_score_thresh: 0.45,
+            box_thresh: 0.2,
+            un_clip_ratio: 1.4,
+            do_angle: false,
+            most_angle: false,
+            round_mode: RoundMode::Nearest,
+            post: PostProcessOptions::default(),
+            rec: RecBatchOptions::default(),
+            angle_rollback: false,
+            angle_rollback_threshold: 0.0,
+        }
+    }
+}
+
+impl DetectOptions {
+    /// This crate's historical behaviour, for reproducing earlier output:
+    /// PP-OCRv5 thresholds, truncating resize, unconditional dilation,
+    /// uncapped candidates, unbatched recognition.
+    pub fn legacy() -> Self {
+        Self {
+            box_score_thresh: 0.5,
+            box_thresh: 0.3,
+            un_clip_ratio: 1.6,
+            round_mode: RoundMode::Floor,
+            post: PostProcessOptions::legacy(),
+            rec: RecBatchOptions::legacy(),
+            ..Self::default()
+        }
+    }
+}
 
 #[derive(Debug)]
 pub struct OcrLite {
@@ -137,31 +210,48 @@ impl OcrLite {
         angle_rollback: bool,
         angle_rollback_threshold: f32,
     ) -> Result<OcrResult, OcrError> {
-        let origin_max_side = img_src.width().max(img_src.height());
-        let mut resize;
-        if max_side_len == 0 || max_side_len > origin_max_side {
-            resize = origin_max_side;
-        } else {
-            resize = max_side_len;
-        }
-        resize += 2 * padding;
-
-        let padding_src = OcrUtils::make_padding(img_src, padding)?;
-
-        let scale = ScaleParam::get_scale_param(&padding_src, resize);
-
-        self.detect_once(
-            &padding_src,
-            &scale,
-            padding,
-            box_score_thresh,
-            box_thresh,
-            un_clip_ratio,
-            do_angle,
-            most_angle,
-            angle_rollback,
-            angle_rollback_threshold,
+        // The positional constructors predate `DetectOptions` and are kept for
+        // compatibility, so they must keep this crate's historical behaviour
+        // (truncating resize, unconditional dilation, unbatched recognition) —
+        // not the new reference defaults.
+        self.detect_with_options(
+            img_src,
+            &DetectOptions {
+                padding,
+                max_side_len,
+                box_score_thresh,
+                box_thresh,
+                un_clip_ratio,
+                do_angle,
+                most_angle,
+                angle_rollback,
+                angle_rollback_threshold,
+                ..DetectOptions::legacy()
+            },
         )
+    }
+
+    /// Detect and recognise text, configured through [`DetectOptions`].
+    pub fn detect_with_options(
+        &mut self,
+        img_src: &image::RgbImage,
+        opts: &DetectOptions,
+    ) -> Result<OcrResult, OcrError> {
+        let origin_max_side = img_src.width().max(img_src.height());
+        // `max_side_len` is a ceiling, never a target: a page smaller than the
+        // cap is detected at its own size rather than upscaled, because
+        // interpolated pixels carry no information the detector can use.
+        let mut resize = if opts.max_side_len == 0 || opts.max_side_len > origin_max_side {
+            origin_max_side
+        } else {
+            opts.max_side_len
+        };
+        resize += 2 * opts.padding;
+
+        let padding_src = OcrUtils::make_padding(img_src, opts.padding)?;
+        let scale = ScaleParam::get_scale_param_with_rounding(&padding_src, resize, opts.round_mode);
+
+        self.detect_once(&padding_src, &scale, opts)
     }
 
     /// 检测图片
@@ -268,28 +358,22 @@ impl OcrLite {
         &mut self,
         img_src: &image::RgbImage,
         scale: &ScaleParam,
-        padding: u32,
-        box_score_thresh: f32,
-        box_thresh: f32,
-        un_clip_ratio: f32,
-        do_angle: bool,
-        most_angle: bool,
-        angle_rollback: bool,
-        angle_rollback_threshold: f32,
+        opts: &DetectOptions,
     ) -> Result<OcrResult, OcrError> {
         let text_boxes = self.db_net.get_text_boxes(
             img_src,
             scale,
-            box_score_thresh,
-            box_thresh,
-            un_clip_ratio,
+            opts.box_score_thresh,
+            opts.box_thresh,
+            opts.un_clip_ratio,
+            opts.post,
         )?;
 
         let part_images = OcrUtils::get_part_images(img_src, &text_boxes);
 
         let angles = self
             .angle_net
-            .get_angles(&part_images, do_angle, most_angle)?;
+            .get_angles(&part_images, opts.do_angle, opts.most_angle)?;
 
         let mut rotated_images: Vec<image::RgbImage> = Vec::with_capacity(part_images.len());
 
@@ -301,7 +385,7 @@ impl OcrLite {
             angles.iter().zip(part_images.into_iter()).enumerate()
         {
             if angle.index == 1 {
-                if angle_rollback {
+                if opts.angle_rollback {
                     // 保留原始副本
                     angle_rollback_records.insert(index, part_image.clone());
                 }
@@ -311,10 +395,11 @@ impl OcrLite {
             rotated_images.push(part_image);
         }
 
-        let text_lines = self.crnn_net.get_text_lines(
+        let text_lines = self.crnn_net.get_text_lines_batched(
             &rotated_images,
             &angle_rollback_records,
-            angle_rollback_threshold,
+            opts.angle_rollback_threshold,
+            opts.rec,
         )?;
 
         let mut text_blocks = Vec::with_capacity(text_lines.len());
@@ -324,8 +409,8 @@ impl OcrLite {
                     .points
                     .iter()
                     .map(|p| Point {
-                        x: ((p.x as f32) - padding as f32) as u32,
-                        y: ((p.y as f32) - padding as f32) as u32,
+                        x: ((p.x as f32) - opts.padding as f32) as u32,
+                        y: ((p.y as f32) - opts.padding as f32) as u32,
                     })
                     .collect(),
                 box_score: text_boxes[i].score,

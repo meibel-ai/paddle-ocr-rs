@@ -45,6 +45,46 @@ impl BaseNet for DbNet {
     }
 }
 
+/// Post-processing knobs that PaddleOCR exposes and this crate previously
+/// hard-coded.
+#[derive(Debug, Clone, Copy)]
+pub struct PostProcessOptions {
+    /// Dilate the binarized map by one pixel before finding contours.
+    ///
+    /// PaddleOCR's `use_dilation` defaults to **false**, and this crate used to
+    /// do it unconditionally. Every box therefore came out fatter than
+    /// reference in all four directions — which compounds with `un_clip_ratio`
+    /// and, on dense tables, lets a box bleed into the neighbouring cell.
+    pub use_dilation: bool,
+    /// Cap on contours considered, highest-scoring first.
+    ///
+    /// PaddleOCR caps this (1000 by default, 3000 in PP-OCRv6's config); this
+    /// crate used to consider every contour found. That is a latency cliff on a
+    /// noisy scan with no accuracy upside, and it got sharper in v6, whose
+    /// lower binarization threshold leaves more contours standing.
+    pub max_candidates: usize,
+}
+
+impl Default for PostProcessOptions {
+    fn default() -> Self {
+        // Reference PaddleOCR, with PP-OCRv6's candidate cap.
+        Self {
+            use_dilation: false,
+            max_candidates: 3000,
+        }
+    }
+}
+
+impl PostProcessOptions {
+    /// This crate's historical behaviour: always dilate, never cap.
+    pub fn legacy() -> Self {
+        Self {
+            use_dilation: true,
+            max_candidates: usize::MAX,
+        }
+    }
+}
+
 impl DbNet {
     pub fn get_text_boxes(
         &mut self,
@@ -53,6 +93,7 @@ impl DbNet {
         box_score_thresh: f32,
         box_thresh: f32,
         un_clip_ratio: f32,
+        opts: PostProcessOptions,
     ) -> Result<Vec<TextBox>, OcrError> {
         let Some(session) = &mut self.session else {
             return Err(OcrError::SessionNotInitialized);
@@ -87,6 +128,7 @@ impl DbNet {
             box_score_thresh,
             box_thresh,
             un_clip_ratio,
+            opts,
         )?;
 
         Ok(text_boxes)
@@ -100,6 +142,7 @@ impl DbNet {
         box_score_thresh: f32,
         box_thresh: f32,
         un_clip_ratio: f32,
+        opts: PostProcessOptions,
     ) -> Result<Vec<TextBox>, OcrError> {
         let max_side_thresh = 3.0;
         let mut rs_boxes = Vec::new();
@@ -124,14 +167,29 @@ impl DbNet {
             imageproc::contrast::ThresholdType::Binary,
         );
 
-        let dilate_img = imageproc::morphology::dilate(
-            &threshold_img,
-            imageproc::distance_transform::Norm::LInf,
-            1,
-        );
+        let contour_src = if opts.use_dilation {
+            std::borrow::Cow::Owned(imageproc::morphology::dilate(
+                &threshold_img,
+                imageproc::distance_transform::Norm::LInf,
+                1,
+            ))
+        } else {
+            std::borrow::Cow::Borrowed(&threshold_img)
+        };
 
-        let img_contours: Vec<imageproc::contours::Contour<i32>> =
-            imageproc::contours::find_contours(&dilate_img);
+        let mut img_contours: Vec<imageproc::contours::Contour<i32>> =
+            imageproc::contours::find_contours(contour_src.as_ref());
+
+        // Cap the candidate count the way PaddleOCR does. Biggest-first is the
+        // usable proxy for its score ordering: the real score needs the mask
+        // fill and ROI mean computed below, so ordering by it here would mean
+        // paying the full per-contour cost for every contour — which is the
+        // cost this cap exists to avoid. Area correlates well enough, and text
+        // regions are not the small ones.
+        if img_contours.len() > opts.max_candidates {
+            img_contours.sort_unstable_by_key(|c| std::cmp::Reverse(c.points.len()));
+            img_contours.truncate(opts.max_candidates);
+        }
 
         for contour in img_contours {
             if contour.points.len() <= 2 {

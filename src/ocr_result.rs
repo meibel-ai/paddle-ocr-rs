@@ -53,7 +53,7 @@ impl fmt::Display for Angle {
     }
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 pub struct TextLine {
     pub text: String,
     pub text_score: f32,
