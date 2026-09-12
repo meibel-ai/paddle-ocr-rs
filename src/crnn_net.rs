@@ -37,7 +37,13 @@ const MAX_REC_WIDTH: u32 = 3200;
 /// shape set stays tiny, so ORT keeps its cached CUDA kernel plan instead of
 /// re-selecting cuDNN algorithms per distinct width (see
 /// `DetectParams::rec_batch` on the Starling side for that measurement).
-const WIDTH_LADDER: &[u32] = &[160, 320, 480, 640, 960, 1280, 1920, 2560, 3200];
+// Deliberately COARSE. Each distinct padded width is a distinct tensor size,
+// and with the recognition output being `batch x time_steps x 18_710` those
+// sizes run to hundreds of MB, so every new one costs an ORT arena allocation.
+// Measured on a 564-box page (Blackwell, batch 16): nine rungs cost 13.1s,
+// three cost 10.2s. Finer is not better — it trades padding waste for
+// allocation churn, and allocation churn wins.
+const WIDTH_LADDER: &[u32] = &[640, 1600, 3200];
 
 /// Smallest ladder rung that fits `w`.
 fn ladder_width(w: u32) -> u32 {
@@ -517,13 +523,17 @@ impl CrnnNet {
 mod ladder_tests {
     use super::{ladder_width, RecBatchOptions, MAX_REC_WIDTH, WIDTH_LADDER};
 
+    /// Property, not fixed values: the rungs are tuned against allocation
+    /// churn and have already changed once (nine rungs 13.1s -> three 10.2s).
     #[test]
     fn rounds_up_to_the_next_rung() {
-        assert_eq!(ladder_width(1), 160);
-        assert_eq!(ladder_width(160), 160);
-        assert_eq!(ladder_width(161), 320);
-        assert_eq!(ladder_width(900), 960);
-        assert_eq!(ladder_width(3200), 3200);
+        for &rung in WIDTH_LADDER {
+            assert_eq!(ladder_width(rung), rung, "a rung maps to itself");
+            if rung > 1 {
+                assert_eq!(ladder_width(rung - 1), rung, "just under maps up");
+            }
+        }
+        assert_eq!(ladder_width(1), WIDTH_LADDER[0]);
     }
 
     /// Never shrink below the crop: a rung smaller than the input would clip
@@ -553,12 +563,15 @@ mod ladder_tests {
         assert_eq!(RecBatchOptions::legacy().batch_size, 1);
     }
 
-    /// The whole point: a small crop on a page with one very wide crop must not
-    /// inherit the wide crop's width. 400px should cost 480, not 3200 — an ~8x
-    /// reduction in tensor, transfer, memset and CTC decode for that crop.
+    /// The whole point: a narrow crop on a page whose widest crop is a full
+    /// table row must not inherit that row's width. Page-max padding sent a
+    /// 400px crop through at 3200px; the ladder must cut that materially,
+    /// because the width drives tensor size, transfer, memset AND the
+    /// `time_steps x 18_710` CTC decode.
     #[test]
     fn a_narrow_crop_is_not_dragged_to_the_page_max() {
-        assert_eq!(ladder_width(400), 480);
-        assert!(ladder_width(400) * 6 < 3200);
+        let narrow = ladder_width(400);
+        assert!(narrow < MAX_REC_WIDTH / 2, "400px -> {narrow}, barely better than page max");
+        assert!(narrow >= 400, "must not clip the crop");
     }
 }
