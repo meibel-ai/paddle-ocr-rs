@@ -22,6 +22,9 @@ geo-clipper = "0.9"
 clipper-sys = "0.8"
 thiserror = "2"
 image = "0.25"
+# Per-crop resize/normalize/CTC-decode are independent and were running on
+# ~1.8 of 16 cores; see get_text_lines_batched.
+rayon = "1"
 
 [build-dependencies]
 cc = "1"

@@ -1,6 +1,7 @@
 use ort::session::Session;
 use ort::value::Tensor;
 use ort::{inputs, session::builder::SessionBuilder};
+use rayon::prelude::*;
 use std::collections::HashMap;
 
 use crate::{base_net::BaseNet, ocr_error::OcrError, ocr_result::TextLine, ocr_utils::OcrUtils};
@@ -313,8 +314,11 @@ impl CrnnNet {
             return Ok(Vec::new());
         }
 
+        // Resize is per-crop and independent. Measured on a 564-box page: the
+        // whole host side of recognition ran on ~1.8 of 16 cores while the GPU
+        // sat at 7%, so this is the axis that was idle.
         let resized: Vec<image::RgbImage> = imgs
-            .iter()
+            .par_iter()
             .map(|img| {
                 let scale = CRNN_DST_HEIGHT as f32 / img.height().max(1) as f32;
                 let w = ((img.width() as f32 * scale).ceil() as u32)
@@ -339,10 +343,16 @@ impl CrnnNet {
         .min(MAX_REC_WIDTH)
         .max(1);
 
+        // `substract_mean_normalize` walks every pixel and writes across three
+        // channel planes, so it is the expensive half; do it in parallel and
+        // keep only the memcpy into the batch tensor serial.
+        let normalized: Vec<ndarray::Array4<f32>> = resized
+            .par_iter()
+            .map(|r| OcrUtils::substract_mean_normalize(r, &MEAN_VALUES, &NORM_VALUES))
+            .collect();
         let mut batch =
             ndarray::Array4::<f32>::zeros((resized.len(), 3, CRNN_DST_HEIGHT as usize, target_w as usize));
-        for (n, r) in resized.iter().enumerate() {
-            let one = OcrUtils::substract_mean_normalize(r, &MEAN_VALUES, &NORM_VALUES);
+        for (n, (r, one)) in resized.iter().zip(&normalized).enumerate() {
             let w = (r.width() as usize).min(target_w as usize);
             batch
                 .slice_mut(ndarray::s![n..n + 1, .., .., ..w])
@@ -365,13 +375,18 @@ impl CrnnNet {
             )));
         }
 
-        let mut lines = Vec::with_capacity(n);
-        for i in 0..n {
-            let start = i * t * c;
-            let slice = &data[start..(start + t * c).min(data.len())];
-            lines.push(Self::score_to_text_line(slice, t, c, &self.keys)?);
-        }
-        Ok(lines)
+        // One `t x c` argmax per row, c = 18,710 for PP-OCRv6. Independent per
+        // row, and the single largest host-side term on a box-dense page.
+        let keys = &self.keys;
+        let lines: Result<Vec<TextLine>, OcrError> = (0..n)
+            .into_par_iter()
+            .map(|i| {
+                let start = i * t * c;
+                let slice = &data[start..(start + t * c).min(data.len())];
+                Self::score_to_text_line(slice, t, c, keys)
+            })
+            .collect();
+        lines
     }
 
     /// Recognize a single text line image with an optional max width/height ratio
